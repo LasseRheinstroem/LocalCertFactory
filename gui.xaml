@@ -1,6 +1,6 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="PS-OfflineCA - Zertifikats-Manager" Height="580" Width="820"
+        Title="PS-OfflineCA - Zertifikats-Manager" Height="620" Width="850"
         WindowStartupLocation="CenterScreen" Background="#F3F3F3">
     <Grid Margin="15">
         <Grid.RowDefinitions>
@@ -18,51 +18,63 @@
         </Border>
 
         <!-- MAIN TABS -->
-        <TabControl Grid.Row="1" Background="White" BorderBrush="#CCCCCC">
+        <TabControl Grid.Row="1" Background="White" BorderBrush="#CCCCCC" x:Name="MainTabControl">
             
-            <!-- TAB 1: ROOT CA -->
-            <TabItem Header="Root-CA Status">
+            <!-- TAB 1: DASHBOARD & ROOT CA STATUS -->
+            <TabItem Header="📋 Dashboard &amp; Status">
                 <Grid Margin="15">
-                    <StackPanel>
-                        <TextBlock Text="Root-CA Konfiguration" FontSize="16" FontWeight="Bold" Margin="0,0,0,10"/>
-                        
-                        <Grid Margin="0,5">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="150"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Common Name (CN):" Grid.Column="0" VerticalAlignment="Center"/>
-                            <TextBox x:Name="TxtRootCN" Grid.Column="1" Padding="5"/>
-                        </Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
 
-                        <Grid Margin="0,5">
+                    <!-- ROOT CA STATUS BAR -->
+                    <Border Grid.Row="0" Background="#EFEFEF" BorderBrush="#DDDDDD" BorderThickness="1" CornerRadius="4" Padding="10" Margin="0,0,0,15">
+                        <Grid>
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="150"/>
                                 <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Text="Organisation (O):" Grid.Column="0" VerticalAlignment="Center"/>
-                            <TextBox x:Name="TxtRootOrg" Grid.Column="1" Padding="5"/>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="Root-CA Status:" FontWeight="Bold" FontSize="14"/>
+                                <TextBlock x:Name="TxtRootInfo" Text="Status wird geprüft..." Foreground="#555555" Margin="0,3,0,0"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                <Button x:Name="BtnCreateRootCA" Content="🔑 Root-CA Erstellen" Padding="8,4" Background="#0078D4" Foreground="White" FontWeight="Bold" Margin="0,0,5,0" FontFamily="Segoe UI Emoji, Segoe UI"/>
+                                <Button x:Name="BtnExportRootCA" Content="📂 CA (.crt) Exportieren" Padding="8,4" Margin="5,0,0,0" FontFamily="Segoe UI Emoji, Segoe UI"/>
+                            </StackPanel>
                         </Grid>
+                    </Border>
 
-                        <Grid Margin="0,5">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="150"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Gültigkeit (in Tage):" Grid.Column="0" VerticalAlignment="Center"/>
-                            <TextBox x:Name="TxtRootYears" Grid.Column="1" Padding="5" Text="30"/>
-                        </Grid>
+                    <!-- DIENSTE LISTE (DATAGRID) -->
+                    <Grid Grid.Row="1">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Text="Verwaltete Dienst-Zertifikate" FontSize="15" FontWeight="Bold" Margin="0,0,0,8"/>
+                        <DataGrid x:Name="GridServices" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" GridLinesVisibility="Horizontal" HeadersVisibility="Column">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Dienst-ID" Binding="{Binding Id}" Width="120"/>
+                                <DataGridTextColumn Header="Common Name (CN)" Binding="{Binding CommonName}" Width="160"/>
+                                <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="110"/>
+                                <DataGridTextColumn Header="Gültig bis" Binding="{Binding ValidTo}" Width="140"/>
+                                <DataGridTextColumn Header="Resttage" Binding="{Binding DaysLeft}" Width="80"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
 
-                        <StackPanel Orientation="Horizontal" Margin="0,20,0,0" HorizontalAlignment="Right">
-                            <Button x:Name="BtnCreateRootCA" Content="🔑 Root-CA Erstellen / Erneuern" Padding="10,6" Background="#0078D4" Foreground="White" FontWeight="Bold" Margin="5,0" FontFamily="Segoe UI Emoji, Segoe UI"/>
-                            <Button x:Name="BtnExportRootCA" Content="📂 Root-CA Exportieren (.crt)" Padding="10,6" Margin="5,0" FontFamily="Segoe UI Emoji, Segoe UI"/>
-                        </StackPanel>
+                    <!-- RENEW BUTTONS -->
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+                        <Button x:Name="BtnRenewSelected" Content="🔄 Ausgewählten Dienst erneuern" Padding="10,6" Margin="0,0,10,0" FontFamily="Segoe UI Emoji, Segoe UI"/>
+                        <Button x:Name="BtnRenewAll" Content="♻️ Alle abgelaufenen/fehlenden erneuern" Padding="10,6" Background="#107C41" Foreground="White" FontWeight="Bold" FontFamily="Segoe UI Emoji, Segoe UI"/>
                     </StackPanel>
                 </Grid>
             </TabItem>
 
-            <!-- TAB 2: DIENST ZERTIFIKATE -->
-            <TabItem Header="Dienst-Zertifikat ausstellen">
+            <!-- TAB 2: DIENST ZERTIFIKAT NEU ANLEGEN -->
+            <TabItem Header="➕ Neues Zertifikat ausstellen">
                 <Grid Margin="15">
                     <StackPanel>
                         <TextBlock Text="Neues Zertifikat für Dienst / Gerät" FontSize="16" FontWeight="Bold" Margin="0,0,0,10"/>
@@ -72,7 +84,7 @@
                                 <ColumnDefinition Width="150"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Text="Dienst Name:" Grid.Column="0" VerticalAlignment="Center"/>
+                            <TextBlock Text="Dienst ID / Name:" Grid.Column="0" VerticalAlignment="Center"/>
                             <TextBox x:Name="TxtServiceName" Grid.Column="1" Padding="5"/>
                         </Grid>
 
@@ -109,14 +121,14 @@
             </TabItem>
 
             <!-- TAB 3: CONFIG EDITOR -->
-            <TabItem Header="config.yaml Bearbeiten">
+            <TabItem Header="⚙️ config.yaml Bearbeiten">
                 <Grid Margin="10">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <TextBox x:Name="TxtYamlContent" Grid.Row="0" AcceptsReturn="True" AcceptsTab="True" FontFamily="Consolas" FontSize="12" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
-                    <Button x:Name="BtnSaveYaml" Grid.Row="1" Content="💾 Config Speichern" Padding="8,5" Margin="0,10,0,0" HorizontalAlignment="Right" FontFamily="Segoe UI Emoji, Segoe UI"/>
+                    <Button x:Name="BtnSaveYaml" Grid.Row="1" Content="💾 Config Speichern &amp; Neu Laden" Padding="8,5" Margin="0,10,0,0" HorizontalAlignment="Right" FontFamily="Segoe UI Emoji, Segoe UI"/>
                 </Grid>
             </TabItem>
 
