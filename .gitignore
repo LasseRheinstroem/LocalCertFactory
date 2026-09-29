@@ -5,6 +5,9 @@ notes/
 config.yaml
 
 # Zertifikate
+RootCA/
+Dienste-Zertifikate/
 *.pfx
 *.pem
 *.crt
+*.key

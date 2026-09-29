@@ -74,7 +74,7 @@ function New-RootCA {
     $config = Get-AppConfig
     if (-not $config) { throw "config.yaml nicht gefunden!" }
 
-    $dataDir = Join-Path $ScriptDir $config.Settings.BaseDirectory
+    $dataDir = Join-Path $ScriptDir $config.Settings.CADirectory
     if (-not (Test-Path $dataDir)) { New-Item -ItemType Directory -Path $dataDir -Force | Out-Null }
 
     $subject = "CN=$($config.RootCA.CommonName), O=$($config.RootCA.Organization), C=$($config.RootCA.Country)"
@@ -126,8 +126,8 @@ function New-ServiceCertificate {
     $config = Get-AppConfig
     if (-not $config) { throw "config.yaml nicht gefunden!" }
 
-    $dataDir   = Join-Path $ScriptDir $config.Settings.BaseDirectory
-    $exportDir = Join-Path $ScriptDir $config.Settings.ExportDirectory
+    $dataDir   = Join-Path $ScriptDir $config.Settings.CADirectory
+    $exportDir = Join-Path $ScriptDir $config.Settings.ServicesDirectory
     $pfxCaPath = Join-Path $dataDir $config.RootCA.PrivateKeyFileName
 
     if (-not (Test-Path $pfxCaPath)) {
@@ -251,7 +251,7 @@ function Update-Dashboard {
     if (-not $config) { return }
 
     # 1. Root-CA Status prüfen
-    $dataDir = Join-Path $ScriptDir $config.Settings.BaseDirectory
+    $dataDir = Join-Path $ScriptDir $config.Settings.CADirectory
     
     # Sicherstellen, dass CertificateFileName definiert ist
     if ($config.RootCA -and $config.RootCA.CertificateFileName) {
@@ -274,7 +274,7 @@ function Update-Dashboard {
     }
 
     # 2. Service-Zertifikate aus config.yaml prüfen
-    $exportDir = Join-Path $ScriptDir $config.Settings.ExportDirectory
+    $exportDir = Join-Path $ScriptDir $config.Settings.ServicesDirectory
     $servicesList = [System.Collections.Generic.List[PSObject]]::new()
 
     if ($config.ServiceTemplates) {
@@ -352,7 +352,7 @@ $BtnCreateRootCA.Add_Click({
 # EXPORT BUTTON FÜR ROOT CA (Gefehltes Feature)
 $BtnExportRootCA.Add_Click({
     try {
-        $config = Get-AppConfig $dataDir = Join-Path $ScriptDir $config.Settings.BaseDirectory
+        $config = Get-AppConfig $dataDir = Join-Path $ScriptDir $config.Settings.CADirectory
         $crtPath = Join-Path $dataDir $config.RootCA.CertificateFileName
 
         if (-not (Test-Path $crtPath)) {
