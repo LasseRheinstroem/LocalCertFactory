@@ -1,0 +1,10 @@
+# Umgebung
+notes/
+
+# Configs
+config.yaml
+
+# Zertifikate
+*.pfx
+*.pem
+*.crt
