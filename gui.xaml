@@ -1,144 +1,419 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="PS-OfflineCA - Zertifikats-Manager" Height="620" Width="850"
-        WindowStartupLocation="CenterScreen" Background="#F3F3F3">
+        Title="LocalCertFactory - PKI Manager" Height="820" Width="1000"
+        WindowStartupLocation="CenterScreen" Background="#F4F5F7">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="Margin" Value="4"/>
+            <Setter Property="Background" Value="#0078D4"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style x:Key="SecondaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="#E1DFDD"/>
+            <Setter Property="Foreground" Value="#323130"/>
+        </Style>
+        <Style x:Key="OutlineButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#0078D4"/>
+            <Setter Property="BorderBrush" Value="#0078D4"/>
+            <Setter Property="BorderThickness" Value="1"/>
+        </Style>
+    </Window.Resources>
+
     <Grid Margin="15">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- HEADER -->
-        <Border Grid.Row="0" Background="#1E1E1E" Padding="15" CornerRadius="5" Margin="0,0,0,15">
-            <StackPanel Orientation="Horizontal">
-                <TextBlock Text="🔒 PS-OfflineCA" Foreground="White" FontSize="20" FontWeight="Bold" VerticalAlignment="Center" FontFamily="Segoe UI Emoji, Segoe UI"/>
-                <TextBlock Text=" | Lokaler PKI &amp; Zertifikats-Generator" Foreground="#A0A0A0" FontSize="14" VerticalAlignment="Center" Margin="10,0,0,0"/>
-            </StackPanel>
-        </Border>
+        <!-- HAUPT TAB CONTROL -->
+        <TabControl x:Name="MainTabControl" Grid.Row="0" BorderThickness="0" Background="Transparent" VerticalAlignment="Stretch" HorizontalAlignment="Stretch">
+            <TabControl.ItemContainerStyle>
+                <Style TargetType="TabItem">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                </Style>
+            </TabControl.ItemContainerStyle>
 
-        <!-- MAIN TABS -->
-        <TabControl Grid.Row="1" Background="White" BorderBrush="#CCCCCC" x:Name="MainTabControl">
-            
-            <!-- TAB 1: DASHBOARD & ROOT CA STATUS -->
-            <TabItem Header="📋 Dashboard &amp; Status">
-                <Grid Margin="15">
+            <!-- TAB 1: DASHBOARD -->
+            <TabItem x:Name="TabDashboard">
+                <Grid VerticalAlignment="Stretch">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
-                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <!-- ROOT CA STATUS BAR -->
-                    <Border Grid.Row="0" Background="#EFEFEF" BorderBrush="#DDDDDD" BorderThickness="1" CornerRadius="4" Padding="10" Margin="0,0,0,15">
+                    <!-- CA STATUS CONTAINER -->
+                    <Border Grid.Row="0" Background="White" CornerRadius="6" Padding="15" Margin="0,0,0,15">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8" ShadowDepth="1" Color="#000000" Opacity="0.1"/>
+                        </Border.Effect>
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
+                            
                             <StackPanel Grid.Column="0">
-                                <TextBlock Text="Root-CA Status:" FontWeight="Bold" FontSize="14"/>
-                                <TextBlock x:Name="TxtRootInfo" Text="Status wird geprüft..." Foreground="#555555" Margin="0,3,0,0"/>
+                                <TextBlock Text="CA-Infrastruktur Status" FontSize="16" FontWeight="Bold" Foreground="#323130"/>
+                                <StackPanel x:Name="PanelCaDetails" Margin="0,8,0,0">
+                                    <!-- Root CA Status Line -->
+                                    <StackPanel Orientation="Horizontal" Margin="0,2">
+                                        <TextBlock Text="Root-CA: " FontSize="13" FontWeight="SemiBold"/>
+                                        <TextBlock x:Name="TxtRootCaInfo" Text="-" FontSize="13"/>
+                                        <TextBlock x:Name="TxtRootCaExpiry" Text="" FontSize="13" Margin="5,0,0,0"/>
+                                    </StackPanel>
+                                    <!-- Intermediate CA Status Line -->
+                                    <StackPanel Orientation="Horizontal" Margin="0,2">
+                                        <TextBlock Text="Intermediate-CA: " FontSize="13" FontWeight="SemiBold"/>
+                                        <TextBlock x:Name="TxtInterCaInfo" Text="Nicht vorhanden" FontSize="13"/>
+                                        <TextBlock x:Name="TxtInterCaExpiry" Text="" FontSize="13" Margin="5,0,0,0"/>
+                                    </StackPanel>
+                                    <TextBlock x:Name="TxtSignModeInfo" Text="Aktiv signierende CA: Root-CA" FontSize="13" FontWeight="SemiBold" Foreground="#0078D4" Margin="0,2"/>
+                                </StackPanel>
+                                <TextBlock x:Name="TxtCaMissing" Text="Keine aktive Root-CA gefunden!" Foreground="#D13438" FontWeight="Bold" Margin="0,8,0,0" Visibility="Collapsed"/>
                             </StackPanel>
-                            <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                <Button x:Name="BtnCreateRootCA" Content="🔑 Root-CA Erstellen" Padding="8,4" Background="#0078D4" Foreground="White" FontWeight="Bold" Margin="0,0,5,0" FontFamily="Segoe UI Emoji, Segoe UI"/>
-                                <Button x:Name="BtnExportRootCA" Content="📂 CA (.crt) Exportieren" Padding="8,4" Margin="5,0,0,0" FontFamily="Segoe UI Emoji, Segoe UI"/>
+
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button x:Name="BtnRenewRootCA" Content="🔄 Root-CA Erneuern" Style="{StaticResource OutlineButton}" Visibility="Collapsed"/>
+                                <Button x:Name="BtnShowCreateRootCA" Content="➕ Root-CA Anlegen" Visibility="Collapsed"/>
+                                <Button x:Name="BtnRenewIntermediate" Content="🔄 Interm.-CA Erneuern" Style="{StaticResource OutlineButton}" Visibility="Collapsed"/>
+                                <Button x:Name="BtnShowCreateIntermediate" Content="➕ Intermediate-CA Anlegen" Style="{StaticResource OutlineButton}"/>
                             </StackPanel>
                         </Grid>
                     </Border>
 
-                    <!-- DIENSTE LISTE (DATAGRID) -->
-                    <Grid Grid.Row="1">
+                    <!-- SERVICE ZERTIFIKATE LISTE -->
+                    <Border Grid.Row="1" Background="White" CornerRadius="6" Padding="15" VerticalAlignment="Stretch">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8" ShadowDepth="1" Color="#000000" Opacity="0.1"/>
+                        </Border.Effect>
+                        <Grid VerticalAlignment="Stretch">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <Grid Grid.Row="0" Margin="0,0,0,10">
+                                <TextBlock Text="Service-Zertifikate Übersicht" FontSize="16" FontWeight="Bold" Foreground="#323130" VerticalAlignment="Center"/>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                    <Button x:Name="BtnNewService" Content="➕ Neuer Service"/>
+                                    <Button x:Name="BtnRenewSelected" Content="🔄 Ausgewählte erneuern" Style="{StaticResource SecondaryButton}"/>
+                                    <Button x:Name="BtnRenewAll" Content="⚡ Alle Fälligen erneuern" Style="{StaticResource SecondaryButton}"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <DataGrid x:Name="GridServices" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" 
+                                      GridLinesVisibility="Horizontal" HeadersVisibility="Column" 
+                                      Background="White" BorderBrush="#E1DFDD" VerticalAlignment="Stretch">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Anzeigename (Label)" Binding="{Binding DisplayName}" Width="*"/>
+                                    <DataGridTemplateColumn Header="Status" Width="120">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding Status}" Foreground="{Binding StatusColor}" FontWeight="Bold" VerticalAlignment="Center" Margin="4,0"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="Gültig bis" Width="150">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding ExpiryDate}" Foreground="{Binding StatusColor}" VerticalAlignment="Center" Margin="4,0"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="Resttage" Width="100">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding DaysRemaining}" Foreground="{Binding StatusColor}" FontWeight="SemiBold" VerticalAlignment="Center" Margin="4,0"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <!-- TAB 2: ROOT-CA ANLEGEN -->
+            <TabItem x:Name="TabCreateRootCA">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <Border Background="White" CornerRadius="6" Padding="20" HorizontalAlignment="Center" Width="700" Margin="0,10,0,10">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8" ShadowDepth="1" Color="#000000" Opacity="0.1"/>
+                        </Border.Effect>
+                        <StackPanel>
+                            <TextBlock Text="Neue Root-CA Erstellen" FontSize="18" FontWeight="Bold" Margin="0,0,0,15"/>
+
+                            <Border Background="#F3F2F1" BorderBrush="#0078D4" BorderThickness="1,0,0,0" Padding="10" Margin="0,0,0,15">
+                                <TextBlock Text="🔒 Die Root-CA ist der vertrauenswürdigste Anker deiner Infrastruktur und MUSS zwingend mit einem Passwort geschützt werden." 
+                                           TextWrapping="Wrap" Foreground="#323130" FontSize="11"/>
+                            </Border>
+
+                            <TextBlock Text="Zertifikat-Inhaber (Subject)" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,5,0,10"/>
+                            
+                            <Grid Margin="0,0,0,5">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,5,0">
+                                    <TextBlock Text="Common Name (CN)" FontWeight="SemiBold"/>
+                                    <TextBox x:Name="TxtRootCn" Padding="4" Margin="0,2,0,8"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="5,0,0,0">
+                                    <TextBlock Text="Organization (O)" FontWeight="SemiBold"/>
+                                    <TextBox x:Name="TxtRootOrg" Padding="4" Margin="0,2,0,8"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <Grid Margin="0,0,0,5">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,5,0">
+                                    <TextBlock Text="Organizational Unit (OU) (Optional)" Foreground="#605E5C"/>
+                                    <TextBox x:Name="TxtRootOu" Padding="4" Margin="0,2,0,8"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="5,0,0,0">
+                                    <TextBlock Text="Country Code (C)" FontWeight="SemiBold"/>
+                                    <TextBox x:Name="TxtRootCountry" Padding="4" Margin="0,2,0,8"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <Grid Margin="0,0,0,15">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,5,0">
+                                    <TextBlock Text="State / Province (ST) (Optional)" Foreground="#605E5C"/>
+                                    <TextBox x:Name="TxtRootState" Padding="4" Margin="0,2,0,8"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="5,0,0,0">
+                                    <TextBlock Text="Locality / City (L) (Optional)" Foreground="#605E5C"/>
+                                    <TextBox x:Name="TxtRootLocality" Padding="4" Margin="0,2,0,8"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <TextBlock Text="Passwort-Schutz (Erforderlich)" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,10,0,10"/>
+                            <Grid Margin="0,0,0,15">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,5,0">
+                                    <TextBlock Text="CA-Passwort" FontWeight="SemiBold"/>
+                                    <PasswordBox x:Name="PwdRootPass" Padding="4" Margin="0,2,0,8"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="5,0,0,0">
+                                    <TextBlock Text="Passwort wiederholen" FontWeight="SemiBold"/>
+                                    <PasswordBox x:Name="PwdRootPassConfirm" Padding="4" Margin="0,2,0,8"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <TextBlock Text="Kryptographie &amp; Parameter" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,10,0,10"/>
+                            <Grid Margin="0,0,0,15">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,5,0">
+                                    <TextBlock Text="Key Algorithm" FontWeight="SemiBold"/>
+                                    <ComboBox x:Name="CmbRootAlgorithm" SelectedIndex="0" Padding="4" Margin="0,2,0,8">
+                                        <ComboBoxItem Content="RSA"/>
+                                        <ComboBoxItem Content="ECDSA"/>
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="5,0,5,0">
+                                    <TextBlock Text="Key Length" FontWeight="SemiBold"/>
+                                    <ComboBox x:Name="CmbRootKeyLength" SelectedIndex="1" Padding="4" Margin="0,2,0,8">
+                                        <ComboBoxItem Content="2048"/>
+                                        <ComboBoxItem Content="4096"/>
+                                        <ComboBoxItem Content="8192"/>
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2" Margin="5,0,0,0">
+                                    <TextBlock Text="Gültigkeit (Tage)" FontWeight="SemiBold"/>
+                                    <TextBox x:Name="TxtRootDays" Padding="4" Margin="0,2,0,8"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+                                <Button x:Name="BtnCancelRootCA" Content="Abbrechen" Style="{StaticResource SecondaryButton}"/>
+                                <Button x:Name="BtnSaveRootCA" Content="🔐 Root-CA Erstellen"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- TAB 3: INTERMEDIATE-CA ANLEGEN -->
+            <TabItem x:Name="TabCreateIntermediate">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <Border Background="White" CornerRadius="6" Padding="20" HorizontalAlignment="Center" Width="700" Margin="0,10,0,10">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8" ShadowDepth="1" Color="#000000" Opacity="0.1"/>
+                        </Border.Effect>
+                        <StackPanel>
+                            <TextBlock Text="Neue Intermediate-CA Erstellen" FontSize="18" FontWeight="Bold" Margin="0,0,0,5"/>
+                            
+                            <Border Background="#F3F2F1" BorderBrush="#0078D4" BorderThickness="1,0,0,0" Padding="10" Margin="0,0,0,15">
+                                <TextBlock Text="ℹ Eine Intermediate-CA wird von der Root-CA signiert. Im Alltag werden Service-Zertifikate ausschließlich von ihr ausgestellt." 
+                                           TextWrapping="Wrap" Foreground="#323130" FontSize="11"/>
+                            </Border>
+
+                            <TextBlock Text="Zertifikat-Inhaber (Subject)" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,5,0,10"/>
+                            <Grid Margin="0,0,0,5">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,5,0">
+                                    <TextBlock Text="Common Name (CN)" FontWeight="SemiBold"/>
+                                    <TextBox x:Name="TxtInterCn" Padding="4" Margin="0,2,0,8"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="5,0,0,0">
+                                    <TextBlock Text="Organization (O)" FontWeight="SemiBold"/>
+                                    <TextBox x:Name="TxtInterOrg" Padding="4" Margin="0,2,0,8"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <TextBlock Text="Passwort-Schutz (Optional)" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,10,0,5"/>
+                            <Border Background="#EFF6FC" BorderBrush="#0078D4" BorderThickness="1" Padding="10" CornerRadius="4" Margin="0,0,0,10">
+                                <TextBlock Text="💡 Ohne Passwort: Erlaubt vollautomatische Ausstellung ohne Passwortabfragen. Geschützt über NTFS-Dateirechte." 
+                                           TextWrapping="Wrap" FontSize="11" Foreground="#323130"/>
+                            </Border>
+
+                            <Grid Margin="0,0,0,15">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,5,0">
+                                    <TextBlock Text="Passwort (Leer = Passwortlos)" Foreground="#605E5C"/>
+                                    <PasswordBox x:Name="PwdInterPass" Padding="4" Margin="0,2,0,8"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="5,0,0,0">
+                                    <TextBlock Text="Passwort wiederholen" Foreground="#605E5C"/>
+                                    <PasswordBox x:Name="PwdInterPassConfirm" Padding="4" Margin="0,2,0,8"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <TextBlock Text="Kryptographie &amp; Parameter" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,10,0,10"/>
+                            <Grid Margin="0,0,0,15">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,5,0">
+                                    <TextBlock Text="Key Algorithm" FontWeight="SemiBold"/>
+                                    <ComboBox x:Name="CmbInterAlgorithm" SelectedIndex="0" Padding="4" Margin="0,2,0,8">
+                                        <ComboBoxItem Content="RSA"/>
+                                        <ComboBoxItem Content="ECDSA"/>
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="5,0,5,0">
+                                    <TextBlock Text="Key Length" FontWeight="SemiBold"/>
+                                    <ComboBox x:Name="CmbInterKeyLength" SelectedIndex="0" Padding="4" Margin="0,2,0,8">
+                                        <ComboBoxItem Content="2048"/>
+                                        <ComboBoxItem Content="4096"/>
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2" Margin="5,0,0,0">
+                                    <TextBlock Text="Gültigkeit (Tage)" FontWeight="SemiBold"/>
+                                    <TextBox x:Name="TxtInterDays" Padding="4" Margin="0,2,0,8"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+                                <Button x:Name="BtnCancelIntermediate" Content="Abbrechen" Style="{StaticResource SecondaryButton}"/>
+                                <Button x:Name="BtnSaveIntermediate" Content="🔑 Intermediate-CA Erstellen"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- TAB 4: NEUER SERVICE ANLEGEN -->
+            <TabItem x:Name="TabNewService">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <Border Background="White" CornerRadius="6" Padding="20" HorizontalAlignment="Center" Width="700" Margin="0,10,0,10">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8" ShadowDepth="1" Color="#000000" Opacity="0.1"/>
+                        </Border.Effect>
+                        <StackPanel>
+                            <TextBlock Text="Neues Service-Zertifikat Konfigurieren" FontSize="18" FontWeight="Bold" Margin="0,0,0,15"/>
+
+                            <TextBlock Text="Interne Bezeichnung" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,0,0,10"/>
+                            <TextBlock Text="Anzeigename / Label" FontWeight="SemiBold"/>
+                            <TextBox x:Name="TxtServiceDisplayName" Text="Proxmox Node 01" Padding="4" Margin="0,2,0,15"/>
+
+                            <TextBlock Text="Zertifikat-Inhaber (Subject) &amp; SANs" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,5,0,10"/>
+                            <TextBlock Text="Common Name (CN / Primary Domain)" FontWeight="SemiBold"/>
+                            <TextBox x:Name="TxtServiceCn" Text="pve01.home.internal" Padding="4" Margin="0,2,0,8"/>
+
+                            <TextBlock Text="Subject Alternative Names (SANs) - Kommagetrennt" FontWeight="SemiBold"/>
+                            <TextBox x:Name="TxtServiceSANs" Text="pve01.home.internal, 192.168.1.10" Padding="4" Margin="0,2,0,15"/>
+
+                            <TextBlock Text="Kryptographie &amp; Laufzeit" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,5,0,10"/>
+                            <Grid Margin="0,0,0,15">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,5,0">
+                                    <TextBlock Text="Key Algorithm" FontWeight="SemiBold"/>
+                                    <ComboBox x:Name="CmbServiceAlgorithm" SelectedIndex="0" Padding="4" Margin="0,2,0,8">
+                                        <ComboBoxItem Content="RSA"/>
+                                        <ComboBoxItem Content="ECDSA"/>
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="5,0,5,0">
+                                    <TextBlock Text="Key Length" FontWeight="SemiBold"/>
+                                    <ComboBox x:Name="CmbServiceKeyLength" SelectedIndex="0" Padding="4" Margin="0,2,0,8">
+                                        <ComboBoxItem Content="2048"/>
+                                        <ComboBoxItem Content="4096"/>
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2" Margin="5,0,0,0">
+                                    <TextBlock Text="Gültigkeit (Tage)" FontWeight="SemiBold"/>
+                                    <TextBox x:Name="TxtServiceDays" Padding="4" Margin="0,2,0,8"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <TextBlock Text="Export-Dateien Generieren" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,5,0,10"/>
+                            <WrapPanel Margin="0,0,0,20">
+                                <CheckBox x:Name="ChkExportPfx" Content="PFX Container (.pfx)" Margin="0,0,15,5"/>
+                                <CheckBox x:Name="ChkExportCrt" Content="Zertifikat (.crt)" Margin="0,0,15,5"/>
+                                <CheckBox x:Name="ChkExportKey" Content="Private Key (.key)" Margin="0,0,15,5"/>
+                                <CheckBox x:Name="ChkExportPemOnly" Content="PEM (nur Zertifikat .pem)" Margin="0,0,15,5"/>
+                                <CheckBox x:Name="ChkExportPemFull" Content="PEM Combined (.pem)" Margin="0,0,15,5"/>
+                            </WrapPanel>
+
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                <Button x:Name="BtnCancelNewService" Content="Abbrechen" Style="{StaticResource SecondaryButton}"/>
+                                <Button x:Name="BtnSaveNewService" Content="💾 Speichern &amp; Erzeugen"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- TAB 5: CONFIG EDITOR -->
+            <TabItem x:Name="TabConfig">
+                <Border Background="White" CornerRadius="6" Padding="20">
+                    <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
-                        <TextBlock Text="Verwaltete Dienst-Zertifikate" FontSize="15" FontWeight="Bold" Margin="0,0,0,8"/>
-                        <DataGrid x:Name="GridServices" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" GridLinesVisibility="Horizontal" HeadersVisibility="Column">
-                            <DataGrid.Columns>
-                                <DataGridTextColumn Header="Dienst-ID" Binding="{Binding Id}" Width="120"/>
-                                <DataGridTextColumn Header="Common Name (CN)" Binding="{Binding CommonName}" Width="160"/>
-                                <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="110"/>
-                                <DataGridTextColumn Header="Gültig bis" Binding="{Binding ValidTo}" Width="140"/>
-                                <DataGridTextColumn Header="Resttage" Binding="{Binding DaysLeft}" Width="80"/>
-                            </DataGrid.Columns>
-                        </DataGrid>
+
+                        <TextBlock Grid.Row="0" Text="Erweiterte Einstellungen (config.yaml)" FontSize="18" FontWeight="Bold" Margin="0,0,0,15"/>
+
+                        <TextBox x:Name="TxtConfigEditor" Grid.Row="1" AcceptsReturn="True" TextWrapping="Wrap" 
+                                 FontFamily="Consolas" VerticalScrollBarVisibility="Auto" Margin="0,0,0,15"/>
+
+                        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button x:Name="BtnBackFromConfig" Content="Zurück zum Dashboard" Style="{StaticResource SecondaryButton}"/>
+                            <Button x:Name="BtnSaveConfig" Content="💾 Config Speichern"/>
+                        </StackPanel>
                     </Grid>
-
-                    <!-- RENEW BUTTONS -->
-                    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-                        <Button x:Name="BtnRenewSelected" Content="🔄 Ausgewählten Dienst erneuern" Padding="10,6" Margin="0,0,10,0" FontFamily="Segoe UI Emoji, Segoe UI"/>
-                        <Button x:Name="BtnRenewAll" Content="♻️ Alle abgelaufenen/fehlenden erneuern" Padding="10,6" Background="#107C41" Foreground="White" FontWeight="Bold" FontFamily="Segoe UI Emoji, Segoe UI"/>
-                    </StackPanel>
-                </Grid>
+                </Border>
             </TabItem>
-
-            <!-- TAB 2: DIENST ZERTIFIKAT NEU ANLEGEN -->
-            <TabItem Header="➕ Neues Zertifikat ausstellen">
-                <Grid Margin="15">
-                    <StackPanel>
-                        <TextBlock Text="Neues Zertifikat für Dienst / Gerät" FontSize="16" FontWeight="Bold" Margin="0,0,0,10"/>
-
-                        <Grid Margin="0,5">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="150"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Dienst ID / Name:" Grid.Column="0" VerticalAlignment="Center"/>
-                            <TextBox x:Name="TxtServiceName" Grid.Column="1" Padding="5"/>
-                        </Grid>
-
-                        <Grid Margin="0,5">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="150"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Common Name (CN):" Grid.Column="0" VerticalAlignment="Center"/>
-                            <TextBox x:Name="TxtServiceCN" Grid.Column="1" Padding="5"/>
-                        </Grid>
-
-                        <Grid Margin="0,5">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="150"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="SAN (DNS-Namen):" Grid.Column="0" VerticalAlignment="Center"/>
-                            <TextBox x:Name="TxtSAN_DNS" Grid.Column="1" Padding="5" ToolTip="Kommagetrennt, z. B. pve1.fritz.box, pve1"/>
-                        </Grid>
-
-                        <Grid Margin="0,5">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="150"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="SAN (IP-Adressen):" Grid.Column="0" VerticalAlignment="Center"/>
-                            <TextBox x:Name="TxtSAN_IP" Grid.Column="1" Padding="5" ToolTip="Kommagetrennt, z. B. 192.168.178.10"/>
-                        </Grid>
-
-                        <Button x:Name="BtnIssueCert" Content="🚀 Dienst-Zertifikat Generieren" Padding="10,8" Background="#107C41" Foreground="White" FontWeight="Bold" Margin="0,20,0,0" HorizontalAlignment="Right" FontFamily="Segoe UI Emoji, Segoe UI"/>
-                    </StackPanel>
-                </Grid>
-            </TabItem>
-
-            <!-- TAB 3: CONFIG EDITOR -->
-            <TabItem Header="⚙️ config.yaml Bearbeiten">
-                <Grid Margin="10">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="*"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
-                    <TextBox x:Name="TxtYamlContent" Grid.Row="0" AcceptsReturn="True" AcceptsTab="True" FontFamily="Consolas" FontSize="12" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
-                    <Button x:Name="BtnSaveYaml" Grid.Row="1" Content="💾 Config Speichern &amp; Neu Laden" Padding="8,5" Margin="0,10,0,0" HorizontalAlignment="Right" FontFamily="Segoe UI Emoji, Segoe UI"/>
-                </Grid>
-            </TabItem>
-
         </TabControl>
 
-        <!-- FOOTER STATUSBAR -->
-        <StatusBar Grid.Row="2" Margin="0,10,0,0" Background="#E6E6E6">
-            <StatusBarItem>
-                <TextBlock x:Name="TxtStatus" Text="Bereit." Foreground="#333333"/>
-            </StatusBarItem>
-        </StatusBar>
+        <!-- STATUSZEILE MIT EINSTELLUNGEN-BUTTON -->
+        <Border Grid.Row="1" Background="#E1DFDD" Padding="8,2" Margin="0,8,0,0" CornerRadius="4">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock x:Name="TxtStatus" Grid.Column="0" Text="Bereit." FontSize="12" Foreground="#323130" VerticalAlignment="Center"/>
+
+                <Button x:Name="BtnOpenConfig" Grid.Column="1" Content="⚙ Einstellungen" 
+                        Style="{StaticResource SecondaryButton}" FontSize="11" Padding="6,2" Margin="0"/>
+            </Grid>
+        </Border>
     </Grid>
 </Window>
