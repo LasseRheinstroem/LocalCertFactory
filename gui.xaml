@@ -108,27 +108,41 @@
                                       GridLinesVisibility="Horizontal" HeadersVisibility="Column" 
                                       Background="White" BorderBrush="#E1DFDD" VerticalAlignment="Stretch">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="Anzeigename (Label)" Binding="{Binding DisplayName}" Width="2*"/>
-                                    <DataGridTextColumn Header="Common Name (CN)" Binding="{Binding CN}" Width="2*"/>
-                                    <DataGridTextColumn Header="SANs / IP-Adressen" Binding="{Binding SANs}" Width="4*"/>
+                                    <DataGridTextColumn Header="Anzeigename" Binding="{Binding DisplayName}" Width="2*"/>
+                                    <DataGridTextColumn Header="CN / SANs (Domains &amp; IPs)" Binding="{Binding SANs}" Width="6*" />
                                     <DataGridTemplateColumn Header="Status" Width="1*">
+                                        <DataGridTemplateColumn.HeaderStyle>
+                                            <Style TargetType="DataGridColumnHeader">
+                                                <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                                            </Style>
+                                        </DataGridTemplateColumn.HeaderStyle>
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
-                                                <TextBlock Text="{Binding Status}" Foreground="{Binding StatusColor}" FontWeight="Bold" VerticalAlignment="Center" Margin="4,0"/>
+                                                <TextBlock Text="{Binding Status}" Foreground="{Binding StatusColor}" FontWeight="Bold" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="4,0"/>
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>
-                                    <DataGridTemplateColumn Header="Gültig bis" Width="0.9*">
+                                    <DataGridTemplateColumn Header="Gültig bis" Width="1*">
+                                        <DataGridTemplateColumn.HeaderStyle>
+                                            <Style TargetType="DataGridColumnHeader">
+                                                <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                                            </Style>
+                                        </DataGridTemplateColumn.HeaderStyle>
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
-                                                <TextBlock Text="{Binding ExpiryDate}" Foreground="{Binding StatusColor}" VerticalAlignment="Center" Margin="4,0"/>
+                                                <TextBlock Text="{Binding ExpiryDate}" Foreground="{Binding StatusColor}" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="4,0"/>
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>
                                     <DataGridTemplateColumn Header="Resttage" Width="0.75*">
+                                        <DataGridTemplateColumn.HeaderStyle>
+                                            <Style TargetType="DataGridColumnHeader">
+                                                <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                                            </Style>
+                                        </DataGridTemplateColumn.HeaderStyle>
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
-                                                <TextBlock Text="{Binding DaysRemaining}" Foreground="{Binding StatusColor}" FontWeight="SemiBold" VerticalAlignment="Center" Margin="4,0"/>
+                                                <TextBlock Text="{Binding DaysRemaining}" Foreground="{Binding StatusColor}" FontWeight="SemiBold" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="4,0"/>
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>

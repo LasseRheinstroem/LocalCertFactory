@@ -691,17 +691,39 @@ $BtnSaveIntermediate.Add_Click({
 
 $BtnSaveNewService.Add_Click({
     if (-not $global:HasRootCA) {
-        [System.Windows.MessageBox]::Show("Fehler: Es ist keine Root-CA vorhanden. Es können keine Service-Zertifikate ausgestellt werden!", "Keine CA vorhanden", "OK", "Error")
+        [System.Windows.MessageBox]::Show("Fehler: Es ist keine Root-CA vorhanden.", "Keine CA vorhanden", "OK", "Error")
         return
     }
 
-    if ($global:HasIntermediate -and -not $global:IntermediateHasPass) {
-        $TxtStatus.Text = "Zertifikat passwortlos via Intermediate-CA ausgestellt."
-    } else {
-        $pwd = Get-CaPassword -PromptText "CA-Passwort zur Signierung erforderlich:"
-        if ([string]::IsNullOrEmpty($pwd)) { return }
-        $TxtStatus.Text = "Service-Zertifikat signiert und ausgestellt."
+    $cn = $TxtServiceCn.Text.Trim()
+    if ([string]::IsNullOrEmpty($cn)) {
+        [System.Windows.MessageBox]::Show("Bitte einen Common Name (CN) eingeben!", "Fehlende Eingabe", "OK", "Error")
+        return
     }
+
+    # SANs einlesen und säubern
+    $rawSANs = $TxtServiceSANs.Text.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+
+    # CN immer an erste Stelle setzen (Duplikate entfernen)
+    $allSANs = @($cn) + ($rawSANs | Where-Object { $_ -ne $cn })
+    $formattedSANs = ($allSANs | Select-Object -Unique) -join ", "
+
+    # Neues Objekt für das Grid (Beispiel)
+    $newService = [PSCustomObject]@{
+        DisplayName   = if ($TxtServiceDisplayName.Text) { $TxtServiceDisplayName.Text } else { $cn }
+        SANs          = $formattedSANs
+        Status        = "Gültig"
+        ExpiryDate    = (Get-Date).AddDays([int]$TxtServiceDays.Text).ToString("yyyy-MM-dd")
+        DaysRemaining = $TxtServiceDays.Text
+        StatusColor   = (Get-StatusColor -Days [int]$TxtServiceDays.Text)
+    }
+
+    # Dem Grid hinzufügen & Dashboard aktualisieren
+    $currentList = [System.Collections.Generic.List[PSCustomObject]]::new($GridServices.ItemsSource)
+    $currentList.Add($newService)
+    $GridServices.ItemsSource = $currentList
+
+    Update-DashboardStatus
     $MainTabControl.SelectedItem = $TabDashboard
 })
 

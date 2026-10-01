@@ -13,6 +13,8 @@ defaults:
   state: "Baden-Wuerttemberg"
   locality: "Stuttgart"
   organization: "Familiennetzwerk"
+  threshold_days_warning: 30
+  threshold_days_critical: 7
   
   root_ca:
     common_name: "MeinHeimnetz Root CA"
