@@ -23,14 +23,74 @@ if (-not (Test-Path $xamlPath)) {
     exit
 }
 
-# --- EINFACHER FALLBACK / PARSER FÜR CONFIG.YAML ---
-function Read-SimpleYaml {
-    param([string]$FilePath)
-    if (-not (Test-Path $FilePath)) { return "" }
-    return Get-Content $FilePath -Raw -Encoding UTF8
+# --- DEFAULT CONFIG & LOAD FUNCTION ---
+$defaultConfigText = @"
+# ==========================================
+# LocalCertFactory Configuration
+# ==========================================
+
+paths:
+  openssl_exe: "openssl" # Oder absoluter Pfad, z. B. "C:\\Program Files\\OpenSSL-Win64\\bin\\openssl.exe"
+  ca_directory: "CA" # oder "C:\\LocalCertFactory\\CA"
+  certs_directory: "Certificates" # oder "C:\\LocalCertFactory\\Certificates"
+  # bei Pfaden ist leider für ein "\" ein "\\" nötig, bitte entsprechend eingeben
+
+defaults:
+  country: "DE"
+  state: "Baden-Wuerttemberg"
+  locality: "Stuttgart"
+  organization: "Familiennetzwerk"
+  
+  root_ca:
+    common_name: "MeinHeimnetz Root CA"
+    ou: "Certificate Authority"
+    validity_days: 10957 # 30 Jahre
+    key_algorithm: "RSA"
+    key_length: 4096
+    hash_algorithm: "SHA256"
+    crt_file: "RootCA.crt"
+    pfx_file: "RootCA.pfx"
+
+  intermediate_ca:
+    enabled: false
+    common_name: "MeinHeimnetz Intermediate CA"
+    ou: "Issuing CA"
+    validity_days: 1826 # 5 Jahre
+    key_algorithm: "RSA"
+    key_length: 2048
+    has_password: false
+    crt_file: "IntermediateCA.crt"
+    pfx_file: "IntermediateCA.pfx"
+
+  services:
+    validity_days: 365 # 1 Jahr
+    key_algorithm: "RSA"
+    key_length: 2048
+    exports:
+      pfx: true
+      crt: true
+      key: true
+      pem_cert: false
+      pem_full: true
+"@
+
+function Get-OrCreateConfig {
+    param(
+        [string]$FilePath,
+        [string]$DefaultContent
+    )
+
+    if (-not (Test-Path $FilePath)) {
+        # Datei anlegen und Standard-Inhalt schreiben
+        [System.IO.File]::WriteAllText($FilePath, $DefaultContent, [System.Text.Encoding]::UTF8)
+        return $DefaultContent
+    } else {
+        # Bestehende Datei lesen
+        return [System.IO.File]::ReadAllText($FilePath, [System.Text.Encoding]::UTF8)
+    }
 }
 
-$rawConfigText = Read-SimpleYaml -FilePath $configPath
+$rawConfigText = Get-OrCreateConfig -FilePath $configPath -DefaultContent $defaultConfigText
 
 # --- XAML LADEN ---
 $xamlText = [System.IO.File]::ReadAllText($xamlPath, [System.Text.Encoding]::UTF8)
