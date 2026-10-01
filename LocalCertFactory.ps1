@@ -286,7 +286,7 @@ function Set-ComboBoxByText {
     }
 }
 
-function Load-ConfigToForm {
+function LoadConfigToForm {
     $cfg = $global:Config
 
     # Root CA
@@ -328,7 +328,7 @@ function Save-ConfigToFile {
 }
 
 # Formulare initial befüllen
-Load-ConfigToForm
+LoadConfigToForm
 
 # --- 9. HELPER FUNKTIONEN GUI STYLING ---
 function Get-StatusColor {
@@ -610,16 +610,16 @@ $BtnBackFromConfig.Add_Click({
 
 # RENEW CA HANDLERS
 $BtnRenewRootCA.Add_Click({
-    $pwd = Get-CaPassword -PromptText "Root-CA Passwort zur Erneuerung erforderlich:"
-    if ($pwd) {$global:RootDaysRemaining = 10957
+    $passwd = Get-CaPassword -PromptText "Root-CA Passwort zur Erneuerung erforderlich:"
+    if ($passwd) {$global:RootDaysRemaining = 10957
         Update-DashboardStatus
         $TxtStatus.Text = "Root-CA wurde erfolgreich erneuert."
     }
 })
 
 $BtnRenewIntermediate.Add_Click({
-    $pwd = Get-CaPassword -PromptText "Root-CA Passwort zur Signierung der Intermediate-CA erforderlich:"
-    if ($pwd) {$global:InterDaysRemaining = 1826
+    $passwd = Get-CaPassword -PromptText "Root-CA Passwort zur Signierung der Intermediate-CA erforderlich:"
+    if ($passwd) {$global:InterDaysRemaining = 1826
         Update-DashboardStatus
         $TxtStatus.Text = "Intermediate-CA wurde erfolgreich erneuert."
     }
