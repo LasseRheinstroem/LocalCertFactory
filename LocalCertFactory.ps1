@@ -61,6 +61,7 @@ defaults:
     key_algorithm: "RSA"
     key_length: 2048
     has_password: false
+    pathlen: 0
     crt_file: "IntermediateCA.crt"
     pfx_file: "IntermediateCA.pfx"
 
@@ -68,6 +69,7 @@ defaults:
     validity_days: 365 # 1 Jahr
     key_algorithm: "RSA"
     key_length: 2048
+    default_eku: "serverAuth"
     exports:
       pfx: true
       crt: true
@@ -184,7 +186,7 @@ function Get-CaPassword {
     return $null
 }
 
-# --- 7. CONTROLS REINIZIALISIEREN & MAP PEN ---
+# --- 7. CONTROLS MAPPEN ---
 $MainTabControl         = $window.FindName("MainTabControl")
 $TabDashboard           = $window.FindName("TabDashboard")
 $TabCreateRootCA        = $window.FindName("TabCreateRootCA")
@@ -213,7 +215,7 @@ $GridServices           = $window.FindName("GridServices")
 $BtnNewService          = $window.FindName("BtnNewService")
 $PanelNoCaWarning       = $window.FindName("PanelNoCaWarning")
 
-# Form Controls
+# Form Controls - Root CA
 $TxtRootCn              = $window.FindName("TxtRootCn")
 $TxtRootOrg             = $window.FindName("TxtRootOrg")
 $TxtRootOu              = $window.FindName("TxtRootOu")
@@ -228,9 +230,11 @@ $PwdRootPassConfirm     = $window.FindName("PwdRootPassConfirm")
 $BtnCancelRootCA        = $window.FindName("BtnCancelRootCA")
 $BtnSaveRootCA          = $window.FindName("BtnSaveRootCA")
 
+# Form Controls - Intermediate CA
 $TxtInterCn             = $window.FindName("TxtInterCn")
 $TxtInterOrg            = $window.FindName("TxtInterOrg")
 $TxtInterDays           = $window.FindName("TxtInterDays")
+$TxtInterPathLen        = $window.FindName("TxtInterPathLen")
 $CmbInterAlgorithm      = $window.FindName("CmbInterAlgorithm")
 $CmbInterKeyLength      = $window.FindName("CmbInterKeyLength")
 $PwdInterPass           = $window.FindName("PwdInterPass")
@@ -238,11 +242,22 @@ $PwdInterPassConfirm    = $window.FindName("PwdInterPassConfirm")
 $BtnCancelIntermediate  = $window.FindName("BtnCancelIntermediate")
 $BtnSaveIntermediate    = $window.FindName("BtnSaveIntermediate")
 
+# Form Controls - Service Certificate
 $TxtServiceDisplayName  = $window.FindName("TxtServiceDisplayName")
 $TxtServiceCn           = $window.FindName("TxtServiceCn")
-$TxtServiceSANs         = $window.FindName("TxtServiceSANs")
+$TxtServiceOrg          = $window.FindName("TxtServiceOrg")
+$TxtServiceOu           = $window.FindName("TxtServiceOu")
+$TxtServiceCountry      = $window.FindName("TxtServiceCountry")
+$TxtServiceLocality     = $window.FindName("TxtServiceLocality")
+$TxtServiceDnsSANs      = $window.FindName("TxtServiceDnsSANs")
+$TxtServiceIpSANs       = $window.FindName("TxtServiceIpSANs")
+$CmbServiceEku          = $window.FindName("CmbServiceEku")
 $CmbServiceAlgorithm    = $window.FindName("CmbServiceAlgorithm")
 $CmbServiceKeyLength    = $window.FindName("CmbServiceKeyLength")
+$ChkKuDigitalSignature  = $window.FindName("ChkKuDigitalSignature")
+$ChkKuKeyEncipherment   = $window.FindName("ChkKuKeyEncipherment")
+$ChkKuDataEncipherment  = $window.FindName("ChkKuDataEncipherment")
+$ChkKuKeyAgreement      = $window.FindName("ChkKuKeyAgreement")
 $TxtServiceDays         = $window.FindName("TxtServiceDays")
 $ChkExportPfx           = $window.FindName("ChkExportPfx")
 $ChkExportCrt           = $window.FindName("ChkExportCrt")
@@ -252,6 +267,7 @@ $ChkExportPemFull       = $window.FindName("ChkExportPemFull")
 $BtnCancelNewService    = $window.FindName("BtnCancelNewService")
 $BtnSaveNewService      = $window.FindName("BtnSaveNewService")
 
+# Config Editor Controls
 $TxtConfigEditor        = $window.FindName("TxtConfigEditor")
 $TxtConfigNotice        = $window.FindName("TxtConfigNotice")
 $BtnOpenConfig          = $window.FindName("BtnOpenConfig")
@@ -262,7 +278,6 @@ $BtnExportConfig        = $window.FindName("BtnExportConfig")
 $TxtStatus              = $window.FindName("TxtStatus")
 
 # --- 8. FUNKTIONEN ZUM BEFÜLLEN & SPEICHERN DER CONFIG ---
-
 # Helper zum Aktualisieren des Config-Tab Status
 function Update-ConfigTabState {
     if ($global:HasRootCA) {
@@ -277,10 +292,11 @@ function Update-ConfigTabState {
 function Set-ComboBoxByText {
     param([System.Windows.Controls.ComboBox]$ComboBox, [string]$Value)
     if (-not $ComboBox) { return }
-    for ($i = 0; $i -lt $ComboBox.Items.Count; $i++) {$item = $ComboBox.Items[$i]
-        $content = if ($item -is [System.Windows.Controls.ComboBoxItem]) { $item.Content.ToString() } else {$item.ToString() }
+    for ($i = 0; $i -lt $ComboBox.Items.Count; $i++) {
+        $item = $ComboBox.Items[$i]
+        $content = if ($item -is [System.Windows.Controls.ComboBoxItem]) { $item.Content.ToString() } else { $item.ToString() }
         if ($content -eq $Value) {
-            $ComboBox.SelectedIndex =$i
+            $ComboBox.SelectedIndex = $i
             return
         }
     }
@@ -301,29 +317,37 @@ function LoadConfigToForm {
     Set-ComboBoxByText -ComboBox $CmbRootKeyLength -Value $cfg.defaults.root_ca.key_length.ToString()
 
     # Intermediate CA
-    if ($TxtInterCn)   { $TxtInterCn.Text   = $cfg.defaults.intermediate_ca.common_name }
-    if ($TxtInterOrg)  { $TxtInterOrg.Text  = $cfg.defaults.organization }
-    if ($TxtInterDays) { $TxtInterDays.Text = $cfg.defaults.intermediate_ca.validity_days.ToString() }
+    if ($TxtInterCn)      { $TxtInterCn.Text      = $cfg.defaults.intermediate_ca.common_name }
+    if ($TxtInterOrg)     { $TxtInterOrg.Text     = $cfg.defaults.organization }
+    if ($TxtInterDays)    { $TxtInterDays.Text    = $cfg.defaults.intermediate_ca.validity_days.ToString() }
+    if ($TxtInterPathLen -and $cfg.defaults.intermediate_ca.pathlen -ne $null) { 
+        $TxtInterPathLen.Text = $cfg.defaults.intermediate_ca.pathlen.ToString() 
+    }
     Set-ComboBoxByText -ComboBox $CmbInterAlgorithm -Value $cfg.defaults.intermediate_ca.key_algorithm
     Set-ComboBoxByText -ComboBox $CmbInterKeyLength -Value $cfg.defaults.intermediate_ca.key_length.ToString()
 
-    # Service Defaults
-    if ($TxtServiceDays) { $TxtServiceDays.Text = $cfg.defaults.services.validity_days.ToString() }
+    # Service Defaults & Identitätsattribute
+    if ($TxtServiceOrg)      { $TxtServiceOrg.Text      = $cfg.defaults.organization }
+    if ($TxtServiceOu)       { $TxtServiceOu.Text       = $cfg.defaults.root_ca.ou }
+    if ($TxtServiceCountry)  { $TxtServiceCountry.Text  = $cfg.defaults.country }
+    if ($TxtServiceLocality) { $TxtServiceLocality.Text = $cfg.defaults.locality }
+    if ($TxtServiceDays)     { $TxtServiceDays.Text     = $cfg.defaults.services.validity_days.ToString() }
+    
     Set-ComboBoxByText -ComboBox $CmbServiceAlgorithm -Value $cfg.defaults.services.key_algorithm
     Set-ComboBoxByText -ComboBox $CmbServiceKeyLength -Value $cfg.defaults.services.key_length.ToString()
+    
     if ($ChkExportPfx)     { $ChkExportPfx.IsChecked     = [bool]$cfg.defaults.services.exports.pfx }
     if ($ChkExportCrt)     { $ChkExportCrt.IsChecked     = [bool]$cfg.defaults.services.exports.crt }
     if ($ChkExportKey)     { $ChkExportKey.IsChecked     = [bool]$cfg.defaults.services.exports.key }
     if ($ChkExportPemOnly) { $ChkExportPemOnly.IsChecked = [bool]$cfg.defaults.services.exports.pem_cert }
     if ($ChkExportPemFull) { $ChkExportPemFull.IsChecked = [bool]$cfg.defaults.services.exports.pem_full }
 
-    # Config Editor Textupdaten
     if ($TxtConfigEditor) { $TxtConfigEditor.Text = ConvertTo-Yaml -Data $cfg }
 }
 
 function Save-ConfigToFile {
     $yamlString = ConvertTo-Yaml -Data $global:Config
-    [System.IO.File]::WriteAllText($configPath,$yamlString, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($configPath, $yamlString, [System.Text.Encoding]::UTF8)
     if ($TxtConfigEditor) { $TxtConfigEditor.Text = $yamlString }
 }
 
@@ -362,21 +386,19 @@ function Test-HasDueServices {
         $Services,
         [int]$WarningThreshold = 30
     )
-    if ($null -eq $Services) { return $false }
-
+    if ($null -eq $Services)
+    	{ return $false }
     foreach ($item in $Services) {
         # 1. Prüfe auf Status-Text
         if ($item.Status -eq "Warnung" -or $item.Status -eq "Abgelaufen") {
             return $true
         }
-
         # 2. Prüfe auf verbleibende Tage
         if ($null -ne $item.DaysRemaining) {
             $daysVal = 0
             if ([int]::TryParse($item.DaysRemaining.ToString(), [ref]$daysVal)) {
-                if ($daysVal -le $WarningThreshold) {
-                    return $true
-                }
+                if ($daysVal -le $WarningThreshold)
+                	{ return $true }
             }
         }
     }
@@ -391,40 +413,30 @@ function Update-DashboardStatus {
         $BtnNewService.IsEnabled = $canIssueCertificates
         $BtnNewService.ToolTip = if (-not $canIssueCertificates) { "Es muss zuerst eine Root-CA angelegt werden." } else { $null }
     }
-    if ($PanelNoCaWarning) {
-        $PanelNoCaWarning.Visibility = if ($canIssueCertificates) { "Collapsed" } else { "Visible" }
-    }
-    if ($BtnSaveNewService) {
-        $BtnSaveNewService.IsEnabled = $canIssueCertificates
-    }
+    if ($PanelNoCaWarning)
+    	{ $PanelNoCaWarning.Visibility = if ($canIssueCertificates) { "Collapsed" } else { "Visible" } }
+    if ($BtnSaveNewService)
+    	{ $BtnSaveNewService.IsEnabled = $canIssueCertificates }
 
     # Intermediate-CA Absicherung
     if ($BtnShowCreateIntermediate) {
         $BtnShowCreateIntermediate.IsEnabled = $canIssueCertificates
         $BtnShowCreateIntermediate.ToolTip = if (-not $canIssueCertificates) { "Es muss zuerst eine Root-CA angelegt werden." } else { $null }
     }
-    if ($PanelNoRootForInterWarning) {
-        $PanelNoRootForInterWarning.Visibility = if ($canIssueCertificates) { "Collapsed" } else { "Visible" }
-    }
-    if ($BtnSaveIntermediate) {
-        $BtnSaveIntermediate.IsEnabled = $canIssueCertificates
-    }
+    if ($PanelNoRootForInterWarning)
+    	{ $PanelNoRootForInterWarning.Visibility = if ($canIssueCertificates) { "Collapsed" } else { "Visible" } }
+    if ($BtnSaveIntermediate)
+    	{ $BtnSaveIntermediate.IsEnabled = $canIssueCertificates }
 
-    # --- PRÜFUNG SERVICE-ZERTIFIKATE & ERNEUERUNGS-BUTTONS ---
     $services = $GridServices.ItemsSource
     $hasServices = ($null -ne $services -and @($services).Count -gt 0)
 
-    # Threshold-Wert verlässlich auslesen
     $warningDays = 30
     try {
-        if ($global:Config -and $global:Config.defaults -and $global:Config.defaults.ContainsKey('threshold_days_warning')) {
-            $warningDays = [int]$global:Config.defaults['threshold_days_warning']
-        } elseif ($global:Config.defaults.threshold_days_warning) {
+        if ($global:Config.defaults.threshold_days_warning) {
             $warningDays = [int]$global:Config.defaults.threshold_days_warning
         }
-    } catch {
-        $warningDays = 30
-    }
+    } catch { $warningDays = 30 }
 
     # 1. "Ausgewählte erneuern"
     if ($BtnRenewSelected) {
@@ -434,7 +446,6 @@ function Update-DashboardStatus {
 
     # 2. "Fällige erneuern"
     $hasDueServices = Test-HasDueServices -Services $services -WarningThreshold $warningDays
-
     if ($BtnRenewDue) {
         $BtnRenewDue.IsEnabled = $hasDueServices
         $BtnRenewDue.ToolTip = if (-not $hasDueServices) { "Keine fälligen (orange) oder abgelaufenen (roten) Service-Zertifikate vorhanden." } else { $null }
@@ -443,7 +454,6 @@ function Update-DashboardStatus {
     # CA-Status Aktualisierung
     if ($global:HasRootCA) {
         $TxtRootCaInfo.Text  = $global:Config.defaults.root_ca.common_name
-        
         $rootColor = Get-StatusColor -Days $global:RootDaysRemaining
         $TxtRootCaExpiry.Text = "(Gültig bis: 2036-09-30, $global:RootDaysRemaining Tage restlich)"
         $TxtRootCaExpiry.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString($rootColor)
@@ -457,13 +467,11 @@ function Update-DashboardStatus {
         if ($global:HasIntermediate) {
             $passState = if ($global:IntermediateHasPass) { "Passwortgeschützt" } else { "Passwortlos" }
             $TxtInterCaInfo.Text  = "$($global:Config.defaults.intermediate_ca.common_name) ($passState)"
-            
             $interColor = Get-StatusColor -Days $global:InterDaysRemaining
             $TxtInterCaExpiry.Text = "(Gültig bis: 2026-10-25, $global:InterDaysRemaining Tage restlich)"
             $TxtInterCaExpiry.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString($interColor)
 
             $TxtSignModeInfo.Text = "Aktiv signierende CA: Intermediate-CA"
-
             $BtnShowCreateIntermediate.Visibility = "Collapsed"
             $BtnRenewIntermediate.Visibility      = "Visible"
             Set-ButtonStyle -Button $BtnRenewIntermediate -DaysRemaining $global:InterDaysRemaining
@@ -471,7 +479,6 @@ function Update-DashboardStatus {
             $TxtInterCaInfo.Text   = "Nicht vorhanden"
             $TxtInterCaExpiry.Text = ""
             $TxtSignModeInfo.Text  = "Aktiv signierende CA: Root-CA"
-
             $BtnShowCreateIntermediate.Visibility = "Visible"
             $BtnRenewIntermediate.Visibility      = "Collapsed"
         }
@@ -484,13 +491,13 @@ function Update-DashboardStatus {
     }
 }
 
-# DEMO / MOCK DATA GRID (Beispieldaten inkl. SANs)
-# DEMO / MOCK DATA GRID (Beispieldaten inkl. CN & SANs)
+# DEMO / MOCK DATA GRID (Inkl. EKU & getrennter SANs)
 $mockServices = @(
     [PSCustomObject]@{ 
         DisplayName   = "Proxmox Cluster"
         CN            = "pve01.home.internal"
-        SANs          = "pve01.home.internal, 192.168.1.10"
+        SANs          = "DNS:pve01.home.internal, IP:192.168.1.10"
+        EKU           = "Server (serverAuth)"
         Status        = "Gültig"
         ExpiryDate    = "2027-09-30"
         DaysRemaining = "365"
@@ -499,16 +506,18 @@ $mockServices = @(
     [PSCustomObject]@{ 
         DisplayName   = "Home Assistant"
         CN            = "hass.home.internal"
-        SANs          = "hass.home.internal, homeassistant.local, 192.168.1.15"
+        SANs          = "DNS:hass.home.internal, DNS:homeassistant.local, IP:192.168.1.15"
+        EKU           = "Server (serverAuth)"
         Status        = "Warnung"
         ExpiryDate    = "2026-10-15"
         DaysRemaining = "15"
         StatusColor   = (Get-StatusColor -Days 15) 
     },
     [PSCustomObject]@{ 
-        DisplayName   = "OPNsense Firewall"
-        CN            = "router.home.internal"
-        SANs          = "router.home.internal, 192.168.1.1"
+        DisplayName   = "IPSec VPN Client"
+        CN            = "user-vpn.home.internal"
+        SANs          = "DNS:user-vpn.home.internal"
+        EKU           = "Client (clientAuth)"
         Status        = "Abgelaufen"
         ExpiryDate    = "2026-08-01"
         DaysRemaining = "-60"
@@ -516,7 +525,7 @@ $mockServices = @(
     }
 )
 $GridServices.ItemsSource = $mockServices
-# ENDE DEMO / MOCK DATA GRID (Beispieldaten inkl. SANs)
+# ENDE DEMO / MOCK DATA GRID
 
 Update-DashboardStatus
 
@@ -586,7 +595,6 @@ $BtnImportConfig.Add_Click({
     if ($openFileDialog.ShowDialog() -eq $true) {
         try {
             $importedText = [System.IO.File]::ReadAllText($openFileDialog.FileName, [System.Text.Encoding]::UTF8)
-            
             # Syntax prüfen via powershell-yaml
             $parsed = ConvertFrom-Yaml -Yaml $importedText
             $global:Config = $parsed
@@ -608,6 +616,7 @@ $BtnBackFromConfig.Add_Click({
     $TxtStatus.Text = "Bereit."
 })
 
+
 # RENEW CA HANDLERS
 $BtnRenewRootCA.Add_Click({
     $passwd = Get-CaPassword -PromptText "Root-CA Passwort zur Erneuerung erforderlich:"
@@ -625,7 +634,7 @@ $BtnRenewIntermediate.Add_Click({
     }
 })
 
-# AKTIONEN SPEICHERN & CONFIG SCHREIBEN
+# AKTIONEN SPEICHERN
 $BtnSaveRootCA.Add_Click({
     if ([string]::IsNullOrEmpty($PwdRootPass.Password)) {
         [System.Windows.MessageBox]::Show("Root-CA erfordert ein Passwort!", "Fehler", "OK", "Error")
@@ -636,7 +645,6 @@ $BtnSaveRootCA.Add_Click({
         return
     }
 
-    # Config im Speicher aktualisieren
     $global:Config.defaults.root_ca.common_name   = $TxtRootCn.Text
     $global:Config.defaults.organization          = $TxtRootOrg.Text
     $global:Config.defaults.root_ca.ou            = $TxtRootOu.Text
@@ -647,7 +655,6 @@ $BtnSaveRootCA.Add_Click({
     if ($CmbRootAlgorithm.SelectedItem) { $global:Config.defaults.root_ca.key_algorithm = $CmbRootAlgorithm.Text }
     if ($CmbRootKeyLength.SelectedItem) { $global:Config.defaults.root_ca.key_length    = [int]$CmbRootKeyLength.Text }
 
-    # In Datei schreiben
     Save-ConfigToFile
 
     $global:HasRootCA = $true
@@ -670,10 +677,10 @@ $BtnSaveIntermediate.Add_Click({
         return
     }
 
-    # Config im Speicher aktualisieren & Datei schreiben...
     $global:Config.defaults.intermediate_ca.common_name   = $TxtInterCn.Text
     $global:Config.defaults.organization                  = $TxtInterOrg.Text
     $global:Config.defaults.intermediate_ca.validity_days = [int]$TxtInterDays.Text
+    $global:Config.defaults.intermediate_ca.pathlen       = [int]$TxtInterPathLen.Text
     if ($CmbInterAlgorithm.SelectedItem) { $global:Config.defaults.intermediate_ca.key_algorithm = $CmbInterAlgorithm.Text }
     if ($CmbInterKeyLength.SelectedItem) { $global:Config.defaults.intermediate_ca.key_length    = [int]$CmbInterKeyLength.Text }
     $global:Config.defaults.intermediate_ca.has_password  = (-not [string]::IsNullOrEmpty($PwdInterPass.Password))
@@ -701,17 +708,44 @@ $BtnSaveNewService.Add_Click({
         return
     }
 
-    # SANs einlesen und säubern
-    $rawSANs = $TxtServiceSANs.Text.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+    # SAN Parsing (Smart & Getrennt)
+    $dnsList = $TxtServiceDnsSANs.Text.Split(',') | ForEach-Object { $_.Trim() } | Where-Object {$_ -ne "" }
+    $ipList  = $TxtServiceIpSANs.Text.Split(',')  | ForEach-Object { $_.Trim() } | Where-Object {$_ -ne "" }
 
-    # CN immer an erste Stelle setzen (Duplikate entfernen)
-    $allSANs = @($cn) + ($rawSANs | Where-Object { $_ -ne $cn })
-    $formattedSANs = ($allSANs | Select-Object -Unique) -join ", "
+    # Fallback / Smart Detection Check: Falls IP versehentlich im DNS Feld landete oder umgekehrt
+    $finalDns = [System.Collections.Generic.List[string]]::new()
+    $finalIps = [System.Collections.Generic.List[string]]::new()
 
-    # Neues Objekt für das Grid (Beispiel)
+    # CN als ersten DNS-Eintrag aufnehmen, falls FQDN
+    if ($cn -as [System.Net.IPAddress]) {
+        $finalIps.Add($cn)
+    } else {
+        $finalDns.Add($cn)
+    }
+
+    foreach ($entry in ($dnsList +$ipList)) {
+        if ($entry -as [System.Net.IPAddress]) {
+            if (-not $finalIps.Contains($entry)) { $finalIps.Add($entry) }
+        } else {
+            if (-not $finalDns.Contains($entry)) { $finalDns.Add($entry) }
+        }
+    }
+
+    # Formatierten Output für DataGrid erzeugen (RFC 5280 Syntax-Präfixe)
+    $formattedSanArray = @()
+    foreach ($d in $finalDns) { $formattedSanArray += "DNS:$d" }
+    foreach ($i in $finalIps) { $formattedSanArray += "IP:$i" }
+    $sanString =$formattedSanArray -join ", "
+
+    # EKU Auslesen
+    $selectedEkuText = if ($CmbServiceEku.SelectedItem) {$CmbServiceEku.Text } else { "Server (serverAuth)" }
+
+    # Neues Objekt für das Grid
     $newService = [PSCustomObject]@{
-        DisplayName   = if ($TxtServiceDisplayName.Text) { $TxtServiceDisplayName.Text } else { $cn }
-        SANs          = $formattedSANs
+        DisplayName   = if ($TxtServiceDisplayName.Text) { $TxtServiceDisplayName.Text } else {$cn }
+        CN            = $cn
+        SANs          = $sanString
+        EKU           = $selectedEkuText
         Status        = "Gültig"
         ExpiryDate    = (Get-Date).AddDays([int]$TxtServiceDays.Text).ToString("yyyy-MM-dd")
         DaysRemaining = $TxtServiceDays.Text
@@ -725,6 +759,7 @@ $BtnSaveNewService.Add_Click({
 
     Update-DashboardStatus
     $MainTabControl.SelectedItem = $TabDashboard
+    $TxtStatus.Text = "Service-Zertifikat für '$cn' konfiguriert."
 })
 
 $window.ShowDialog() | Out-Null
