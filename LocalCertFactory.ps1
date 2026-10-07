@@ -350,7 +350,7 @@ function Get-SystemPkiState {
                 # Status 1: FEHLT (Phase 3)
                 $dnsSANs = if ($cfgSvc.sans_dns) { $cfgSvc.sans_dns -join ", " } else { "" }
                 $ipSANs  = if ($cfgSvc.sans_ip)  { $cfgSvc.sans_ip -join ", " }  else { "" }
-                $allSANs = @($dnsSANs, $ipSANs) | Where-Object { $_ -ne "" } | Join-String -Separator ", "
+                $allSANs = (@($dnsSANs, $ipSANs) | Where-Object { $_ -ne "" }) -join ", "
 
                 $certInfo = [PSCustomObject]@{
                     IsMissing      = $true
@@ -389,6 +389,8 @@ function Get-SystemPkiState {
                 if ($certInfo) {
                     $certInfo | Add-Member -NotePropertyName "DisplayName" -NotePropertyValue $certInfo.CommonName -Force
                     $certInfo | Add-Member -NotePropertyName "EKU" -NotePropertyValue "Unbekannt (Orphan)" -Force
+                    $certInfo.Status = "Orphan"
+                    $certInfo.StatusColor = "#8A8886"
                     $state.Services += $certInfo
                 }
             }
@@ -630,16 +632,8 @@ function Test-HasDueServices {
     )
     if ($null -eq $Services) { return $false }
     foreach ($item in $Services) {
-        # 1. Prüfe auf Status-Text
-        if ($item.Status -eq "Warnung" -or $item.Status -eq "Abgelaufen") {
+        if ($item.Status -in @("Fehlt", "Defekt", "Abgelaufen", "Warnung", "Kritisch")) {
             return $true
-        }
-        # 2. Prüfe auf verbleibende Tage
-        if ($null -ne $item.DaysRemaining) {
-            $daysVal = 0
-            if ([int]::TryParse($item.DaysRemaining.ToString(), [ref]$daysVal)) {
-                if ($daysVal -le $WarningThreshold) { return $true }
-            }
         }
     }
     return $false
@@ -715,9 +709,6 @@ function Update-DashboardStatus {
         $BtnRenewIntermediate.Visibility = "Collapsed"
     }
 
-    # Erneuerungsbuttons
-    $hasServices = ($pkiState.Services.Count -gt 0)
-    if ($BtnRenewSelected) { $BtnRenewSelected.IsEnabled = $hasServices }
     if ($BtnRenewDue) { 
         $hasDue = Test-HasDueServices -Services $pkiState.Services
         $BtnRenewDue.IsEnabled = $hasDue 
@@ -1410,6 +1401,14 @@ $GridServices               = $window.FindName("GridServices")
 $BtnNewService              = $window.FindName("BtnNewService")
 $PanelNoCaWarning           = $window.FindName("PanelNoCaWarning")
 
+# ContextMenu Controls Mappen
+$ServiceContextMenu         = $window.FindName("ServiceContextMenu")
+$MenuMainAction             = $window.FindName("MenuMainAction")
+$MenuShowDetails            = $window.FindName("MenuShowDetails")
+$MenuExportCustom           = $window.FindName("MenuExportCustom")
+$MenuAdoptOrphan            = $window.FindName("MenuAdoptOrphan")
+$MenuDeleteCert             = $window.FindName("MenuDeleteCert")
+
 # Form Controls - Root CA
 $TxtRootCn                  = $window.FindName("TxtRootCn")
 $TxtRootOrg                 = $window.FindName("TxtRootOrg")
@@ -1491,7 +1490,198 @@ if (-not $openSslResult -or -not $openSslResult.Success) {
 
 Update-DashboardStatus
 
-# --- 10. EVENT HANDLER ---
+# --- 10. KONTEXTMENÜ LOGIK & HANDLER ---
+$GridServices.Add_ContextMenuOpening({
+    $selected = $GridServices.SelectedItem
+    if (-not $selected) { return }
+
+    # Standardzustand setzen
+    $MenuMainAction.IsEnabled   = $true
+    $MenuShowDetails.IsEnabled  = $true
+    $MenuExportCustom.IsEnabled = $true
+    $MenuAdoptOrphan.IsEnabled  = $false
+    $MenuDeleteCert.IsEnabled   = $true
+
+    # Dynamische Logik je nach Zertifikatsstatus
+switch ($selected.Status) {
+        "Gültig" {
+            $MenuMainAction.Header      = "Manuell erneuern (Force Renew)"
+            $MenuMainAction.IsEnabled   = $true
+            $MenuExportCustom.IsEnabled = $true
+            $MenuDeleteCert.IsEnabled   = $true
+        }
+        "Warnung" {
+            $MenuMainAction.Header      = "Zertifikat erneuern"
+            $MenuMainAction.IsEnabled   = $true
+            $MenuExportCustom.IsEnabled = $true
+            $MenuDeleteCert.IsEnabled   = $true
+        }
+        "Kritisch" {
+            $MenuMainAction.Header      = "Zertifikat erneuern"
+            $MenuMainAction.IsEnabled   = $true
+            $MenuExportCustom.IsEnabled = $true
+            $MenuDeleteCert.IsEnabled   = $true
+        }
+        "Abgelaufen" {
+            $MenuMainAction.Header      = "Zertifikat erneuern (Re-issue)"
+            $MenuMainAction.IsEnabled   = $true
+            $MenuExportCustom.IsEnabled = $true
+            $MenuDeleteCert.IsEnabled   = $true
+        }
+        "Defekt" {
+            $MenuMainAction.Header      = "Reparieren (Unter aktiver CA neu ausstellen)"
+            $MenuMainAction.IsEnabled   = $true
+            $MenuExportCustom.IsEnabled = $false
+            $MenuDeleteCert.IsEnabled   = $true
+        }
+        "Fehlt" {
+            $MenuMainAction.Header      = "Zertifikat erstmals ausstellen"
+            $MenuMainAction.IsEnabled   = $true
+            $MenuExportCustom.IsEnabled = $false
+            $MenuDeleteCert.IsEnabled   = $false
+        }
+        "Orphan" {
+            $MenuMainAction.Header      = "Nicht konfiguriert"
+            $MenuMainAction.IsEnabled   = $false
+            $MenuExportCustom.IsEnabled = $true
+            $MenuAdoptOrphan.IsEnabled  = $true
+            $MenuDeleteCert.IsEnabled   = $true
+        }
+    }
+})
+
+# Hauptaktion ausführen
+$MenuMainAction.Add_Click({
+    $selected = $GridServices.SelectedItem
+    if (-not $selected -or -not $MenuMainAction.IsEnabled) { return }
+
+    $pkiState = Get-SystemPkiState $useInter = ($null -ne $pkiState.IntermediateCA)
+    $caPass   = $null
+
+    if ($useInter -and $pkiState.IntermediateHasPass) {
+        $caPass = Show-PasswordDialog -Title "Intermediate-CA Passwort" -Prompt "Gib das Passwort der Intermediate-CA ein:"
+        if ([string]::IsNullOrWhiteSpace($caPass)) { return }
+    } elseif (-not $useInter) {
+        $caPass = Show-PasswordDialog -Title "Root-CA Passwort" -Prompt "Gib das Passwort der Root-CA ein:"
+        if ([string]::IsNullOrWhiteSpace($caPass)) { return }
+    }
+
+    Repair-ServiceCertificates -CertificatesToRepair @($selected) -CaPassword$caPass
+    Update-DashboardStatus
+    [System.Windows.MessageBox]::Show("Aktion für '$($selected.CommonName)' wurde erfolgreich ausgeführt!", "Erfolg", "OK", "Information")
+})
+
+# Details anzeigen
+$MenuShowDetails.Add_Click({
+    $selected = $GridServices.SelectedItem
+    if (-not $selected) { return }
+
+    $detailsText = @"
+Anzeigename:   $($selected.DisplayName)
+Common Name:   $($selected.CommonName)
+Status:        $($selected.Status)
+Gültig bis:    $($selected.ExpiryDate)
+Resttage:      $($selected.DaysRemaining)
+EKU:           $($selected.EKU)
+SANs:          $($selected.SANs)
+Issuer:        $($selected.Issuer)
+Subject:       $($selected.Subject)
+Seriennummer:  $($selected.SerialNumber)
+Thumbprint:    $($selected.Thumbprint)
+"@
+    [System.Windows.MessageBox]::Show($detailsText, "Zertifikats-Details", "OK", "Information")
+})
+
+# Neuer Export-Handler für "In anderem Format exportieren..."
+$MenuExportCustom.Add_Click({
+    $selected = $GridServices.SelectedItem
+    if (-not $selected) { return }
+
+    # Zertifikatsordner aus Config auflösen
+    $certDir = Get-AbsolutePath $global:Config.paths.certs_directory
+    $safeFileName =$selected.CommonName -replace '[^a-zA-Z0-9\.-]', '_'
+
+    $saveFileDialog = New-Object Microsoft.Win32.SaveFileDialog
+    # Setzt den Startpfad aus der Config
+    $saveFileDialog.InitialDirectory = $certDir
+    $saveFileDialog.FileName = "$safeFileName.crt"
+    $saveFileDialog.Filter = "Zertifikat (*.crt)|*.crt|PEM-Zertifikat (*.pem)|*.pem|PFX-Container (*.pfx)|*.pfx|Alle Dateien (*.*)|*.*"
+    $saveFileDialog.Title = "Zertifikat in anderem Format exportieren"
+
+    if ($saveFileDialog.ShowDialog() -eq $true) {
+        $targetFile = $saveFileDialog.FileName
+        $targetExt  = [System.IO.Path]::GetExtension($targetFile).TrimStart('.').ToLower()
+        $sourceFile = Join-Path$certDir "$safeFileName.$targetExt"
+
+        # Prüfen, ob die Quelldatei für das gewählte Format existiert
+        if (-not (Test-Path $sourceFile)) {
+            [System.Windows.MessageBox]::Show("Die Quelldatei '$safeFileName.$targetExt' existiert nicht im Zertifikats-Ordner.`nBitte stelle sicher, dass dieser Export-Typ in den Einstellungen aktiviert ist.", "Export nicht möglich", "OK", "Warning")
+            return
+        }
+
+        try {
+            Copy-Item -Path $sourceFile -Destination$targetFile -Force
+            [System.Windows.MessageBox]::Show("Datei erfolgreich exportiert nach:`n$targetFile", "Export erfolgreich", "OK", "Information")
+        } catch {
+            [System.Windows.MessageBox]::Show("Fehler beim Exportieren:`n$($_.Exception.Message)", "Fehler", "OK", "Error")
+        }
+    }
+})
+
+# Orphan in config.yaml übernehmen
+$MenuAdoptOrphan.Add_Click({
+    $selected = $GridServices.SelectedItem
+    if (-not $selected -or $selected.Status -ne "Orphan") { return }
+
+    $sansList = $selected.SANs -split ", "
+    $sansDns  = @($sansList | Where-Object { $_ -notmatch '^\d+\.\d+\.\d+\.\d+$' -and $_ -ne "" })
+    $sansIp   = @($sansList | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' })
+
+    $newSvc = [ordered]@{
+        display_name = $selected.CommonName
+        common_name  = $selected.CommonName
+        eku          = $selected.EKU
+        sans_dns     = $sansDns
+        sans_ip      = $sansIp
+    }
+
+    if ($null -eq $global:Config.service_certificates) {$global:Config.service_certificates = @()
+    }
+
+    $global:Config.service_certificates += $newSvc
+    Save-ConfigToFile
+    
+    Update-DashboardStatus
+    [System.Windows.MessageBox]::Show("Zertifikat '$($selected.CommonName)' wurde erfolgreich in die config.yaml übernommen!", "Erfolg", "OK", "Information")
+})
+
+# Zertifikats-Dateien löschen
+$MenuDeleteCert.Add_Click({
+    $selected = $GridServices.SelectedItem
+    if (-not $selected) { return }
+
+    $confirm = [System.Windows.MessageBox]::Show(
+        "Möchtest du die Zertifikats- und Schlüssel-Dateien für '$($selected.CommonName)' wirklich von der Festplatte löschen?",
+        "Datei löschen bestätigen",
+        "YesNo",
+        "Warning"
+    )
+
+    if ($confirm -eq "Yes") {
+        $certDir = Get-AbsolutePath $global:Config.paths.certs_directory
+        $safeFileName =$selected.CommonName -replace '[^a-zA-Z0-9\.-]', '_'
+        
+        Remove-Item (Join-Path $certDir "$safeFileName.crt") -ErrorAction SilentlyContinue
+        Remove-Item (Join-Path $certDir "$safeFileName.key") -ErrorAction SilentlyContinue
+        Remove-Item (Join-Path $certDir "$safeFileName.pfx") -ErrorAction SilentlyContinue
+        Remove-Item (Join-Path $certDir "$safeFileName.pem") -ErrorAction SilentlyContinue
+        Remove-Item (Join-Path $certDir "$safeFileName.full.pem") -ErrorAction SilentlyContinue
+
+        Update-DashboardStatus
+    }
+})
+
+# --- 11. WEITERE BUTTON HANDLER ---
 $BtnShowCreateRootCA.Add_Click({
     $MainTabControl.SelectedItem = $TabCreateRootCA
     $TxtStatus.Text = "Root-CA Konfiguration..."
@@ -1606,12 +1796,12 @@ $BtnRenewIntermediate.Add_Click({
         $rootPasswd = Get-CaPassword -PromptText "Root-CA Passwort zur Signierung erforderlich:"
         if ([string]::IsNullOrWhiteSpace($rootPasswd)) { return }
 
-    # Falls laut Config ein Passwort existiert, fragen wir danach, sonst entfällt die Abfrage
-    if ($global:Config.defaults.intermediate_ca.has_password) {
-        $interPasswd = Get-CaPassword -PromptText "Intermediate-CA Key-Passwort (falls vergeben, sonst Enter):"
-    } else {
-        $interPasswd = $null # bzw. ConvertTo-SecureString "" -AsPlainText -Force (je nachdem, was Get-CaPassword zurückgibt)
-    }
+        # Falls laut Config ein Passwort existiert, fragen wir danach, sonst entfällt die Abfrage
+        if ($global:Config.defaults.intermediate_ca.has_password) {
+            $interPasswd = Get-CaPassword -PromptText "Intermediate-CA Key-Passwort (falls vergeben, sonst Enter):"
+        } else {
+            $interPasswd = $null # bzw. ConvertTo-SecureString "" -AsPlainText -Force (je nachdem, was Get-CaPassword zurückgibt)
+        }
 
         $params = @{
             CommonName   = $global:Config.defaults.intermediate_ca.common_name
@@ -1868,5 +2058,5 @@ $BtnRenewDue.Add_Click({
     }
 })
 
-# --- 11. ANZEIGE DER BENUTZEROBERFLÄCHE ---
+# --- 12. ANZEIGE DER BENUTZEROBERFLÄCHE ---
 $window.ShowDialog() | Out-Null

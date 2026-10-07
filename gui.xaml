@@ -97,15 +97,28 @@
                             <Grid Grid.Row="0" Margin="0,0,0,10">
                                 <TextBlock Text="Service-Zertifikate Übersicht" FontSize="16" FontWeight="Bold" Foreground="#323130" VerticalAlignment="Center"/>
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                    <Button x:Name="BtnNewService" Content="➕ Neuer Service"/>
-                                    <Button x:Name="BtnRenewSelected" Content="🔄 Ausgewählte erneuern" Style="{StaticResource SecondaryButton}" IsEnabled="False"/>
-                                    <Button x:Name="BtnRenewDue" Content="⚡ Alle Fälligen erneuern" Style="{StaticResource SecondaryButton}" IsEnabled="False"/>
+                                    <Button x:Name="BtnNewService" Content="➕ Neues Zertifikat erstellen"/>
+                                    <Button x:Name="BtnRenewDue" Content="🔄 Alle fälligen erneuern / reparieren" Style="{StaticResource SecondaryButton}" IsEnabled="False"/>
                                 </StackPanel>
                             </Grid>
                             <DataGrid x:Name="GridServices" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" 
                                       GridLinesVisibility="Horizontal" HeadersVisibility="Column" 
-                                      Background="White" BorderBrush="#E1DFDD" VerticalAlignment="Stretch">
-                                <DataGrid.Columns>
+                                      Background="White" BorderBrush="#E1DFDD" VerticalAlignment="Stretch" SelectionMode="Single">
+                                <DataGrid.ContextMenu>
+                                    <ContextMenu x:Name="ServiceContextMenu">
+                                        <!-- Dynamischer Haupt-Aktionspunkt -->
+                                        <MenuItem x:Name="MenuMainAction" Header="Verarbeiten" FontWeight="Bold" />
+                                        <MenuItem x:Name="MenuShowDetails" Header="Details anzeigen" />
+                                        <!-- Export Untermenü -->
+                                        <MenuItem x:Name="MenuExportCustom" Header="In anderem Format exportieren..." />
+                                        <Separator />
+                                        <!-- Spezialaktion für Orphans -->
+                                        <MenuItem x:Name="MenuAdoptOrphan" Header="In config.yaml übernehmen" />
+                                        <Separator />
+                                        <!-- Löschen -->
+                                        <MenuItem x:Name="MenuDeleteCert" Header="Zertifikat-Datei löschen" Foreground="Red" />
+                                    </ContextMenu>
+                                </DataGrid.ContextMenu>                                <DataGrid.Columns>
                                     <DataGridTextColumn Header="Anzeigename" Binding="{Binding DisplayName}" Width="2*"/>
                                     <DataGridTextColumn Header="CN / SANs (DNS &amp; IPs)" Binding="{Binding SANs}" Width="4*" />
                                     <DataGridTextColumn Header="Verwendung (EKU)" Binding="{Binding EKU}" Width="3*" />
