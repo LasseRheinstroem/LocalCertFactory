@@ -205,6 +205,13 @@
                                 </StackPanel>
                             </Grid>
 
+                            <TextBlock Text="Dateiname &amp; Speicherung" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,10,0,10"/>
+                            <StackPanel Margin="0,0,0,5">
+                                <TextBlock Text="Dateibasisname" FontWeight="SemiBold"/>
+                                <TextBox x:Name="TxtRootBaseFilename" Padding="4" Margin="0,2,0,4"/>
+                                <TextBlock Text="Name der Ausgabedateien ohne Endung (z.B. RootCA -> RootCA.crt, RootCA.key)" FontSize="10" Foreground="#605E5C"/>
+                            </StackPanel>
+
                             <TextBlock Text="Passwort-Schutz (Erforderlich)" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,10,0,10"/>
                             <Grid Margin="0,0,0,15">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
@@ -288,6 +295,13 @@
                                     <TextBox x:Name="TxtInterOrg" Padding="4" Margin="0,2,0,8"/>
                                 </StackPanel>
                             </Grid>
+
+                            <TextBlock Text="Dateiname &amp; Speicherung" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,10,0,10"/>
+                            <StackPanel Margin="0,0,0,5">
+                                <TextBlock Text="Dateibasisname" FontWeight="SemiBold"/>
+                                <TextBox x:Name="TxtInterBaseFilename" Padding="4" Margin="0,2,0,4"/>
+                                <TextBlock Text="Name der Ausgabedateien ohne Endung (z.B. IntermediateCA -> IntermediateCA.crt, IntermediateCA.key)" FontSize="10" Foreground="#605E5C"/>
+                            </StackPanel>
 
                             <TextBlock Text="Passwort-Schutz (Optional)" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,10,0,5"/>
                             <Border Background="#EFF6FC" BorderBrush="#0078D4" BorderThickness="1" Padding="10" CornerRadius="4" Margin="0,0,0,10">
