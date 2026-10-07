@@ -28,11 +28,10 @@ if (-not (Test-Path $xamlPath)) {
     exit
 }
 
-
 # --- 3. DEFAULT CONFIG & DEKLARATION ---
 $defaultConfigText = @"
 # ==========================================
-# LocalCertFactory Configuration (Soll-Zustand)
+# LocalCertFactory Configuration
 # ==========================================
 
 paths:
@@ -58,12 +57,12 @@ defaults:
 
   intermediate_ca:
     enabled: true
+    has_password: false
     common_name: "MeinHeimnetz Intermediate CA"
     ou: "Issuing CA"
     validity_days: 1826
     key_algorithm: "RSA"
     key_length: 2048
-    has_password: false
     pathlen: 0
     base_filename: "IntermediateCA"
 
@@ -90,13 +89,11 @@ function Test-OpenBinary {
     try {
         if ([string]::IsNullOrWhiteSpace($PathCandidate)) { return $null }
 
-        # Falls nur der Befehlsname wie "openssl" übergeben wurde, Pfad auflösen
         if (-not (Test-Path $PathCandidate -ErrorAction SilentlyContinue)) {
             $cmd = Get-Command $PathCandidate -ErrorAction SilentlyContinue
             if ($cmd) { $PathCandidate = $cmd.Source } else { return $null }
         }
 
-        # Ausführen & Stream in Temp-Datei umleiten
         $tempFile = Join-Path $env:TEMP "openssl_ver.txt"
         $process = Start-Process -FilePath $PathCandidate -ArgumentList "version" -NoNewWindow -PassThru -RedirectStandardOutput $tempFile
         $null = $process.WaitForExit(3000) # Max 3 Sek warten
@@ -105,7 +102,6 @@ function Test-OpenBinary {
             $verOutput = Get-Content $tempFile -Raw
             Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
 
-            # Matcht z.B. "3.5.8" aus "OpenSSL 3.5.8 25 Aug 2026..."
             if ($verOutput -match "OpenSSL\s+([0-9]+\.[0-9]+\.[0-9]+)") {
                 return [PSCustomObject]@{
                     Path    = $PathCandidate
@@ -134,13 +130,14 @@ function Find-OpenSSL {
         $res = Test-OpenBinary -PathCandidate $ConfigPath
         if ($res) { $foundPath = $res.Path; $detectedVersion = $res.Version }
     }
-
     # 2. Im System-PATH suchen
     if (-not $foundPath) {
         $res = Test-OpenBinary -PathCandidate "openssl.exe"
-        if ($res) { $foundPath = $res.Path; $detectedVersion = $res.Version }
+        if ($res) {
+            $foundPath = $res.Path;
+            $detectedVersion = $res.Version
+        }
     }
-
     # 3. Typische Standardpfade durchsuchen (inkl. Git)
     if (-not $foundPath) {
         $commonPaths = @(
@@ -159,7 +156,6 @@ function Find-OpenSSL {
             }
         }
     }
-
     # 4. Falls immer noch nichts gefunden: Dialog öffnen
     if (-not $foundPath) {
         [System.Windows.MessageBox]::Show(
@@ -185,7 +181,6 @@ function Find-OpenSSL {
             return $null
         }
     }
-
     # 5. Mindestversion prüfen
     if ($detectedVersion -and $detectedVersion -lt $MinVersion) {
         [System.Windows.MessageBox]::Show(
@@ -228,7 +223,10 @@ function Get-CaFilePaths {
 }
 
 function Get-CertDetailsFromFile {
-    param([string]$CrtPath)
+    param(
+        [string]$CrtPath,
+        $SigningCaCert = $null
+    )
 
     if (-not (Test-Path $CrtPath)) { return $null }
 
@@ -237,11 +235,19 @@ function Get-CertDetailsFromFile {
         $now = Get-Date
         $daysRemaining = [math]::Max(0, ($cert.NotAfter - $now).Days)
 
-        # SAN Extraction via Extension
+        # Sprachunabhängige SAN-Extraktion (OID 2.5.29.17)
         $sanList = @()
-        $sanExt = $cert.Extensions | Where-Object { $_.Oid.FriendlyName -eq "Subject Alternative Name" }
+        $sanExt = $cert.Extensions | Where-Object { $_.Oid.Value -eq "2.5.29.17" }
         if ($sanExt) {
-            $sanList = $sanExt.Format($true) -split "`r?\n" | ForEach-Object { $_.Trim() }
+            $sanFormatted = $sanExt.Format($true)
+            $lines = $sanFormatted -split "[\r\n,]+"
+            foreach ($line in $lines) {
+                $cleanLine = $line.Trim()
+                if ([string]::IsNullOrWhiteSpace($cleanLine)) { continue }
+                $val = $cleanLine -replace '^(DNS-Name|DNS Name|IP-Adresse|IP Address|URL|Registered ID)=', ''
+                $val = $val.Trim()
+                if ($val -and $sanList -notcontains $val) { $sanList += $val }
+            }
         }
 
         # Statusermittlung
@@ -251,7 +257,20 @@ function Get-CertDetailsFromFile {
         $status = "Gültig"
         $color  = "#107C41" # Grün
 
-        if ($daysRemaining -le 0) {
+        # 1. Mismatch / Defekt-Prüfung gegen aktive CA
+        $isChainValid = $true
+        if ($SigningCaCert) {
+            # Prüft, ob der Issuer des Zertifikats zum Subject der Unterzeichner-CA passt
+            # sowie Abgleich des Authority Key Identifiers
+            if ($cert.Issuer -ne $SigningCaCert.Subject) {
+                $isChainValid = $false
+            }
+        }
+
+        if (-not $isChainValid) {
+            $status = "Defekt"
+            $color  = "#A80000" # Dunkelrot
+        } elseif ($daysRemaining -le 0) {
             $status = "Abgelaufen"
             $color  = "#D13438" # Rot
         } elseif ($daysRemaining -le $critDays) {
@@ -262,7 +281,8 @@ function Get-CertDetailsFromFile {
             $color  = "#D97706" # Orange
         }
 
-        return @{
+        return [PSCustomObject]@{
+            IsMissing      = $false
             Subject        = $cert.Subject
             Issuer         = $cert.Issuer
             CommonName     = ($cert.Subject -replace '.*CN=([^,]+).*', '$1')
@@ -293,42 +313,129 @@ function Get-SystemPkiState {
     $rootPaths  = Get-CaFilePaths -CaDir $caDir -BaseName $rootBase
     $interPaths = Get-CaFilePaths -CaDir $caDir -BaseName $interBase
 
+    $rootCertDetails  = Get-CertDetailsFromFile -CrtPath $rootPaths.CrtPath
+    $interCertDetails = Get-CertDetailsFromFile -CrtPath $interPaths.CrtPath
+
+    # Aktive Unterzeichner-CA ermitteln (Intermediate bevorzugt, sonst Root)
+    $activeSigningCert = if ($interCertDetails) { $interCertDetails.RawCert } elseif ($rootCertDetails) { $rootCertDetails.RawCert } else { $null }
+
     $state = @{
-        RootCA         = Get-CertDetailsFromFile -CrtPath $rootPaths.CrtPath
-        IntermediateCA = Get-CertDetailsFromFile -CrtPath $interPaths.CrtPath
+        RootCA         = $rootCertDetails
+        IntermediateCA = $interCertDetails
         Services       = @()
     }
 
-    # Intermediate Key-Prüfung auf Passwortschutz
     if (Test-Path $interPaths.KeyPath) {
         $keyContent = Get-Content $interPaths.KeyPath -Raw
         $state.IntermediateHasPass = ($keyContent -match "ENCRYPTED")
     } else {
         $state.IntermediateHasPass = $false
     }
-    
-    # Services aus Dateisystem und Config matchen
-    if (Test-Path $certDir) {
-        $crtFiles = Get-ChildItem -Path $certDir -Filter "*.crt"
-        foreach ($file in $crtFiles) {
-            $certInfo = Get-CertDetailsFromFile -CrtPath $file.FullName
-            if ($certInfo) {
-                $safeFileName = $file.BaseName
-                $cfgMatch = $global:Config.service_certificates | Where-Object { 
-                    ($_.common_name -replace '[^a-zA-Z0-9\.-]', '_') -eq $safeFileName -or $_.common_name -eq $certInfo.CommonName 
+
+    # Tracking-Liste verarbeiteter Dateien
+    $processedFiles = @()
+
+    # 1. Alle in config.yaml definierten Services durchgehen (Soll-Zustand)
+    if ($global:Config.service_certificates) {
+        foreach ($cfgSvc in $global:Config.service_certificates) {
+            $cn = $cfgSvc.common_name
+            $safeFileName = $cn -replace '[^a-zA-Z0-9\.-]', '_'
+            $expectedCrtPath = Join-Path $certDir "$safeFileName.crt"
+
+            if (Test-Path $expectedCrtPath) {
+                # Datei existiert -> Details mit CA-Matching laden
+                $certInfo = Get-CertDetailsFromFile -CrtPath $expectedCrtPath -SigningCaCert $activeSigningCert
+                $processedFiles += $expectedCrtPath
+            } else {
+                # Status 1: FEHLT (Phase 3)
+                $dnsSANs = if ($cfgSvc.sans_dns) { $cfgSvc.sans_dns -join ", " } else { "" }
+                $ipSANs  = if ($cfgSvc.sans_ip)  { $cfgSvc.sans_ip -join ", " }  else { "" }
+                $allSANs = @($dnsSANs, $ipSANs) | Where-Object { $_ -ne "" } | Join-String -Separator ", "
+
+                $certInfo = [PSCustomObject]@{
+                    IsMissing      = $true
+                    Subject        = "CN=$cn"
+                    Issuer         = "N/A"
+                    CommonName     = $cn
+                    NotBefore      = $null
+                    NotAfter       = $null
+                    ExpiryDate     = "N/A (Fehlt)"
+                    DaysRemaining  = $null
+                    SerialNumber   = "N/A"
+                    Thumbprint     = "N/A"
+                    SANs           = $allSANs
+                    Status         = "Fehlt"
+                    StatusColor    = "#7A7A7A" # Grau
+                    RawCert        = $null
                 }
+            }
 
-                $displayName = if ($cfgMatch -and $cfgMatch.display_name) { $cfgMatch.display_name } else { $certInfo.CommonName }
-                $ekuVal      = if ($cfgMatch -and $cfgMatch.eku) { $cfgMatch.eku } else { "Server Certificate" }
+            $displayName = if ($cfgSvc.display_name) { $cfgSvc.display_name } else { $cn }
+            $ekuVal      = if ($cfgSvc.eku) { $cfgSvc.eku } else { "Server Certificate" }
 
-                $certInfo["DisplayName"] = $displayName
-                $certInfo["EKU"]         = $ekuVal
-                $state.Services += [PSCustomObject]$certInfo
+            $certInfo | Add-Member -NotePropertyName "DisplayName" -NotePropertyValue $displayName -Force
+            $certInfo | Add-Member -NotePropertyName "EKU" -NotePropertyValue $ekuVal -Force
+
+            $state.Services += $certInfo
+        }
+    }
+
+    # 2. Waise .crt-Dateien erfassen, die auf der Festplatte liegen, aber nicht in der Config stehen
+    if (Test-Path $certDir) {
+        $allCrtFiles = Get-ChildItem -Path $certDir -Filter "*.crt"
+        foreach ($file in $allCrtFiles) {
+            if ($processedFiles -notcontains $file.FullName) {
+                $certInfo = Get-CertDetailsFromFile -CrtPath $file.FullName -SigningCaCert $activeSigningCert
+                if ($certInfo) {
+                    $certInfo | Add-Member -NotePropertyName "DisplayName" -NotePropertyValue $certInfo.CommonName -Force
+                    $certInfo | Add-Member -NotePropertyName "EKU" -NotePropertyValue "Unbekannt (Orphan)" -Force
+                    $state.Services += $certInfo
+                }
             }
         }
     }
 
     return $state
+}
+
+function Repair-ServiceCertificates {
+    param(
+        [array]$CertificatesToRepair,
+        [string]$CaPassword = $null
+    )
+
+    foreach ($certItem in $CertificatesToRepair) {
+        # Suche passende Soll-Konfiguration in der config.yaml
+        $cfgMatch = $global:Config.service_certificates | Where-Object { $_.common_name -eq $certItem.CommonName }
+
+        if (-not $cfgMatch) {
+            Write-Warning "Keine Soll-Konfiguration für '$($certItem.CommonName)' in config.yaml gefunden. Überspringe..."
+            continue
+        }
+
+        # Parameter für Neuausstellung zusammenbauen
+        $params = @{
+            DisplayName  = if ($cfgMatch.display_name) { $cfgMatch.display_name } else { $cfgMatch.common_name }
+            CommonName   = $cfgMatch.common_name
+            Organization = $global:Config.defaults.organization
+            OU           = $global:Config.defaults.root_ca.ou
+            Country      = $global:Config.defaults.country
+            Locality     = $global:Config.defaults.locality
+            SANsDNS      = $cfgMatch.sans_dns
+            SANsIP       = $cfgMatch.sans_ip
+            EKU          = if ($cfgMatch.eku) { $cfgMatch.eku } else { "TLS Web Server Authentication (serverAuth)" }
+            ValidityDays = [int]$global:Config.defaults.services.validity_days
+            KeyAlgorithm = $global:Config.defaults.services.key_algorithm
+            KeyLength    = $global:Config.defaults.services.key_length
+            Exports      = $global:Config.defaults.services.exports
+        }
+
+        $splat = @{ Params = $params }
+        if ($CaPassword) { $splat['CaPassword'] = $CaPassword }
+
+        # Erneute Ausstellung ausführen (überschreibt defekte/abgelaufene Dateien sauber)
+        New-ServiceCertificate @splat
+    }
 }
 
 function Get-OrCreateConfig {
@@ -449,25 +556,13 @@ function Set-ComboBoxByText {
 
 function LoadConfigToForm {
     $cfg = $global:Config
+    $pkiState = Get-SystemPkiState
 
-    # 1. Globalen State anhand der geladenen Daten auflösen
-    if ($cfg.state) {
-        $global:HasRootCA = $null -ne $cfg.state.root_ca_data
-        
-        if ($null -ne $cfg.state.intermediate_ca_data) {
-            $global:HasIntermediate     = $true
-            $global:IntermediateHasPass = [bool]$cfg.state.intermediate_ca_data.has_password
-        } else {
-            $global:HasIntermediate     = $false
-            $global:IntermediateHasPass = $false
-        }
-    } else {
-        $global:HasRootCA           = $false
-        $global:HasIntermediate     = $false
-        $global:IntermediateHasPass = $false
-    }
+    $global:HasRootCA           = ($null -ne $pkiState.RootCA)
+    $global:HasIntermediate     = ($null -ne $pkiState.IntermediateCA)
+    $global:IntermediateHasPass = $pkiState.IntermediateHasPass
 
-    # 2. Formularfelder füllen
+    # Formularfelder füllen
     # Root CA
     if ($TxtRootCn)       { $TxtRootCn.Text       = $cfg.defaults.root_ca.common_name }
     if ($TxtRootOrg)      { $TxtRootOrg.Text      = $cfg.defaults.organization }
@@ -508,13 +603,6 @@ function LoadConfigToForm {
     if ($ChkExportPemFull) { $ChkExportPemFull.IsChecked = [bool]$cfg.defaults.services.exports.pem_full }
 
     if ($TxtConfigEditor) { $TxtConfigEditor.Text = ConvertTo-Yaml -Data $cfg }
-}
-
-function Get-StatusColor {
-    param([int]$Days)
-    if ($Days -le 0) { return "#D13438" }    # Rot / Abgelaufen
-    if ($Days -lt 30) { return "#D97706" }   # Orange / Warnung
-    return "#107C41"                        # Grün / Gut
 }
 
 function Set-ButtonStyle {
@@ -652,45 +740,27 @@ function Invoke-OpenSSL {
     # den tatsächlichen Pfad auflösen.
     if (-not (Test-Path $openSslExe -ErrorAction SilentlyContinue)) {
         $cmd = Get-Command $openSslExe -ErrorAction SilentlyContinue
-
-        if ($cmd) {
-            $openSslExe = $cmd.Source
-        }
-        else {
-            throw "OpenSSL Executable nicht gefunden unter: $openSslExe"
-        }
+        if ($cmd) { $openSslExe = $cmd.Source } else { throw "OpenSSL Executable nicht gefunden unter: $openSslExe" }
     }
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $openSslExe
 
     if ($psi.PSObject.Properties.Name -contains "ArgumentList") {
-
-        # PowerShell 7 / modernes .NET
         foreach ($arg in $Arguments) {
             $psi.ArgumentList.Add([string]$arg)
         }
-
-    }
-    else {
-
+    } else {
         $escapedArguments = foreach ($arg in $Arguments) {
-
             $arg = [string]$arg
-
             if ($arg -match '[\s"]') {
-
-                # Backslashes vor Anführungszeichen korrekt behandeln
                 $escaped = $arg -replace '(\\*)"', '$1$1\"'
                 $escaped = $escaped -replace '(\\+)$', '$1$1'
-
                 '"' + $escaped + '"'
-            }
-            else {
+            } else {
                 $arg
             }
         }
-
         $psi.Arguments = ($escapedArguments -join ' ')
     }
 
@@ -720,8 +790,7 @@ function Invoke-OpenSSL {
         }
 
         return $stdout
-    }
-    catch {
+    } catch {
         throw "Fehler beim Aufruf von OpenSSL:`n$($_.Exception.Message)"
     }
 }
@@ -733,13 +802,7 @@ function New-RootCA {
         [hashtable]$Params
     )
 
-    $caDir = $global:Config.paths.ca_directory
-    # Fallback/Sicherheit: Prüfen ob Pfad vorhanden ist
-    if ([string]::IsNullOrWhiteSpace($caDir)) {
-        throw "Das CA-Verzeichnis (ca_directory) ist in der Konfiguration nicht definiert!"
-    }
-    # Pfad absolut auflösen
-    $caDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($caDir)
+    $caDir = Get-AbsolutePath $global:Config.paths.ca_directory
     if (-not (Test-Path $caDir)) { New-Item -ItemType Directory -Path $caDir -Force | Out-Null }
 
     $baseName = if ($Params.BaseFilename) { $Params.BaseFilename } else { "RootCA" }
@@ -803,39 +866,72 @@ keyUsage = critical, digitalSignature, cRLSign, keyCertSign
             "-out", $pfxPath,
             "-inkey", $keyPath,
             "-in", $crtPath,
+            "-passin", $pfxPass,
             "-passout", $pfxPass
         )
-
-        if (-not [string]::IsNullOrWhiteSpace($Password)) {
-            $pfxArgs += "-passin"
-            $pfxArgs += "pass:$Password"
-        }
 
         Invoke-OpenSSL -Arguments $pfxArgs | Out-Null
 
     } finally {
         if (Test-Path $cnfPath) { Remove-Item $cnfPath -Force -ErrorAction SilentlyContinue }
     }
+}
 
-    # Absoluten Pfad für das .NET-Zertifikatsobjekt sicherstellen
-    $absCrtPath = (Get-Item $crtPath).FullName
-    $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($absCrtPath)
+function Renew-RootCA {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "")]
+    param(
+        [Parameter(Mandatory=$true)][string]$Password,
+        [hashtable]$Params
+    )
+
+    $caDir    = Get-AbsolutePath $global:Config.paths.ca_directory
+    $baseName = if ($Params.BaseFilename) { $Params.BaseFilename } else { "RootCA" }
     
-    return @{
-        common_name         = $Params.CommonName
-        organization        = $Params.Organization
-        organizational_unit = $Params.OU
-        country             = $Params.Country
-        state               = $Params.State
-        locality            = $Params.Locality
-        validity_days       = $Params.ValidityDays
-        key_algorithm       = $Params.KeyAlgorithm
-        key_length          = $Params.KeyLength
-        serial_number       = $cert.SerialNumber
-        issued_date         = $cert.NotBefore.ToString("yyyy-MM-dd HH:mm:ss")
-        expiry_date         = $cert.NotAfter.ToString("yyyy-MM-dd HH:mm:ss")
-        thumbprint          = $cert.Thumbprint
-        status              = "Gültig"
+    $rootKeyPath = Join-Path $caDir "$baseName.key"
+    $rootCrtPath = Join-Path $caDir "$baseName.crt"
+    $cnfPath     = Join-Path $caDir "temp_root_renew.cnf"
+
+    if (-not (Test-Path $rootKeyPath)) {
+        throw "Der private Schlüssel ($rootKeyPath) existiert nicht. Renew nicht möglich!"
+    }
+
+    $days = $Params.ValidityDays
+    $configContent = @"
+[ req ]
+default_bits       = $($Params.KeyLength)
+distinguished_name = req_distinguished_name
+x509_extensions    = v3_ca
+prompt             = no
+
+[ req_distinguished_name ]
+C  = $($Params.Country)
+ST = $($Params.State)
+L  = $($Params.Locality)
+O  = $($Params.Organization)
+OU = $($Params.OU)
+CN = $($Params.CommonName)
+
+[ v3_ca ]
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid:always,issuer
+basicConstraints       = critical, CA:true
+keyUsage               = critical, digitalSignature, cRLSign, keyCertSign
+"@
+    Set-Content -Path $cnfPath -Value $configContent -Encoding UTF8
+
+    try {
+        $args = @(
+            "req", "-new", "-x509", "-sha256",
+            "-days", $days.ToString(),
+            "-key", $rootKeyPath,
+            "-out", $rootCrtPath,
+            "-config", $cnfPath,
+            "-passin", "pass:$Password"
+        )
+        Invoke-OpenSSL -Arguments $args | Out-Null
+    }
+    finally {
+        if (Test-Path $cnfPath) { Remove-Item $cnfPath -Force -ErrorAction SilentlyContinue }
     }
 }
 
@@ -847,12 +943,7 @@ function New-IntermediateCA {
         [hashtable]$Params
     )
 
-    $caDir = $global:Config.paths.ca_directory
-    # Fallback/Sicherheit: Prüfen ob Pfad vorhanden ist
-    if ([string]::IsNullOrWhiteSpace($caDir)) {
-        throw "Das CA-Verzeichnis (ca_directory) ist in der Konfiguration nicht definiert!"
-    }
-
+    $caDir = Get-AbsolutePath $global:Config.paths.ca_directory
     # Root-Dateiname aus der Config holen
     $rootbaseName = if ($global:Config.defaults.root_ca.base_filename) { $global:Config.defaults.root_ca.base_filename } else { "RootCA" }
     $rootKeyPath  = Join-Path $caDir "$rootbaseName.key"
@@ -866,9 +957,8 @@ function New-IntermediateCA {
     $interPfxPath = Join-Path $caDir "$baseName.pfx"
     $cnfPath      = Join-Path $caDir "temp_inter.cnf"
 
-    $pathLen = if ($Params.ContainsKey('PathLength') -and $null -ne $Params.PathLength) { $Params.PathLength } else { 0 }
+    $pathLen = if ($Params.ContainsKey('PathLen') -and $null -ne $Params.PathLen) { $Params.PathLen } else { 0 }
 
-    # Dynamische OpenSSL-Config für Intermediate CA erzeugen
     $configContent = @"
 [ req ]
 default_bits       = $($Params.KeyLength)
@@ -895,29 +985,19 @@ keyUsage               = critical, digitalSignature, cRLSign, keyCertSign
     $hasInterPassword = -not [string]::IsNullOrWhiteSpace($IntermediatePassword)
 
     try {
-        # ---------------------------------------------------------
         # 1. Key erzeugen
-        # ---------------------------------------------------------
         if ($hasInterPassword) {
-            $keyArgs = @(
-                "genrsa", 
-                "-aes256", 
-                "-passout", "pass:$IntermediatePassword", 
-                "-out", $interKeyPath, 
-                $Params.KeyLength.ToString()
-            )
+            $keyArgs = @("genrsa", "-aes256", "-passout", "pass:$IntermediatePassword", "-out", $interKeyPath, $Params.KeyLength.ToString())
         } else {
             $keyArgs = @(
-                "genrsa", 
-                "-out", $interKeyPath, 
+                "genrsa",
+                "-out", $interKeyPath,
                 $Params.KeyLength.ToString()
             )
         }
         Invoke-OpenSSL -Arguments $keyArgs | Out-Null
 
-        # ---------------------------------------------------------
         # 2. CSR erzeugen
-        # ---------------------------------------------------------
         $csrArgs = @(
             "req", "-new",
             "-config", $cnfPath,
@@ -930,9 +1010,7 @@ keyUsage               = critical, digitalSignature, cRLSign, keyCertSign
         }
         Invoke-OpenSSL -Arguments $csrArgs | Out-Null
 
-        # ---------------------------------------------------------
         # 3. Signieren durch Root-CA
-        # ---------------------------------------------------------
         $signArgs = @(
             "x509", "-req",
             "-in", $interCsrPath,
@@ -949,9 +1027,7 @@ keyUsage               = critical, digitalSignature, cRLSign, keyCertSign
         }
         Invoke-OpenSSL -Arguments $signArgs | Out-Null
 
-        # ---------------------------------------------------------
         # 4. PFX Exportieren (inkl. Root CA Chain)
-        # ---------------------------------------------------------
         $pfxArgs = @(
             "pkcs12", "-export",
             "-out", $interPfxPath,
@@ -959,70 +1035,145 @@ keyUsage               = critical, digitalSignature, cRLSign, keyCertSign
             "-in", $interCrtPath,
             "-certfile", $rootCrtPath
         )
-
         if ($hasInterPassword) {
             $pfxArgs += @("-passin", "pass:$IntermediatePassword")
             $pfxArgs += @("-passout", "pass:$IntermediatePassword")
         } else {
             $pfxArgs += @("-passout", "pass:")
         }
-
         Invoke-OpenSSL -Arguments $pfxArgs | Out-Null
 
     } finally {
         if (Test-Path $cnfPath) { Remove-Item $cnfPath -Force -ErrorAction SilentlyContinue }
         if (Test-Path $interCsrPath) { Remove-Item $interCsrPath -Force -ErrorAction SilentlyContinue }
     }
+}
 
-    $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($interCrtPath)
+function Renew-IntermediateCA {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "")]
+    param(
+        [Parameter(Mandatory=$true)][string]$RootPassword,
+        [string]$IntermediatePassword = $null,
+        [hashtable]$Params
+    )
 
-    return @{
-        common_name         = $Params.CommonName
-        organization        = $Params.Organization
-        organizational_unit = $Params.OU
-        country             = $Params.Country
-        state               = $Params.State
-        locality            = $Params.Locality
-        validity_days       = $Params.ValidityDays
-        key_algorithm       = $Params.KeyAlgorithm
-        key_length          = $Params.KeyLength
-        has_password        = $hasInterPassword
-        pathlen             = $pathLen
-        serial_number       = $cert.SerialNumber
-        issued_date         = Get-Date $cert.NotBefore -Format "yyyy-MM-dd HH:mm:ss"
-        expiry_date         = Get-Date $cert.NotAfter -Format "yyyy-MM-dd HH:mm:ss"
-        thumbprint          = $cert.Thumbprint
-        status              = "Gültig"
+    $caDir         = Get-AbsolutePath $global:Config.paths.ca_directory
+    $rootBaseName  = if ($global:Config.defaults.root_ca.base_filename) { $global:Config.defaults.root_ca.base_filename } else { "RootCA" }
+    $rootKeyPath   = Join-Path $caDir "$rootBaseName.key"
+    $rootCrtPath   = Join-Path $caDir "$rootBaseName.crt"
+
+    $interBaseName = if ($Params.BaseFilename) { $Params.BaseFilename } else { "IntermediateCA" }
+    $interKeyPath  = Join-Path $caDir "$interBaseName.key"
+    $interCsrPath  = Join-Path $caDir "$interBaseName.csr"
+    $interCrtPath  = Join-Path $caDir "$interBaseName.crt"
+    $cnfPath       = Join-Path $caDir "temp_inter_renew.cnf"
+
+    if (-not (Test-Path $interKeyPath)) {
+        throw "Der private Schlüssel der Intermediate-CA ($interKeyPath) existiert nicht!"
+    }
+    if (-not (Test-Path $rootKeyPath) -or -not (Test-Path $rootCrtPath)) {
+        throw "Root CA Schlüssel oder Zertifikat fehlt!"
+    }
+
+    $days    = $Params.ValidityDays
+    $pathLen = $Params.PathLen
+
+    $configContent = @"
+[ req ]
+default_bits       = $($Params.KeyLength)
+distinguished_name = req_distinguished_name
+prompt             = no
+
+[ req_distinguished_name ]
+C  = $($Params.Country)
+ST = $($Params.State)
+L  = $($Params.Locality)
+O  = $($Params.Organization)
+OU = $($Params.OU)
+CN = $($Params.CommonName)
+
+[ v3_intermediate_ca ]
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid:always,issuer
+basicConstraints       = critical, CA:true, pathlen:$pathLen
+keyUsage               = critical, digitalSignature, cRLSign, keyCertSign
+"@
+    Set-Content -Path $cnfPath -Value $configContent -Encoding UTF8
+
+    try {
+        # 1. Neuen CSR aus dem BESTEHENDEN Intermediate-Key erzeugen
+        $csrArgs = @(
+            "req", "-new",
+            "-key", $interKeyPath,
+            "-out", $interCsrPath,
+            "-config", $cnfPath
+        )
+        if (-not [string]::IsNullOrEmpty($IntermediatePassword)) {
+            $csrArgs += @("-passin", "pass:$IntermediatePassword")
+        }
+        Invoke-OpenSSL -Arguments $csrArgs | Out-Null
+
+        $signArgs = @(
+            "x509", "-req",
+            "-in", $interCsrPath,
+            "-CA", $rootCrtPath,
+            "-CAkey", $rootKeyPath,
+            "-CAcreateserial",
+            "-out", $interCrtPath,
+            "-days", $days.ToString(),
+            "-sha256", "-extfile",
+            $cnfPath, "-extensions",
+            "v3_intermediate_ca",
+            "-passin", "pass:$RootPassword"
+        )
+        Invoke-OpenSSL -Arguments $signArgs | Out-Null
+    }
+    finally {
+        if (Test-Path $cnfPath) { Remove-Item $cnfPath -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $interCsrPath) { Remove-Item $interCsrPath -Force -ErrorAction SilentlyContinue }
     }
 }
 
 function New-ServiceCertificate {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "")]
     param(
-        [Parameter(Mandatory=$true)][string]$CaPassword,
+        [Parameter(Mandatory=$false)][string]$CaPassword,
         [string]$PfxPassword = $null,
         [hashtable]$Params
     )
 
-    $caDir = $global:Config.paths.ca_directory
-    $certDir = Join-Path $caDir "certs"
+    $caDir   = Get-AbsolutePath $global:Config.paths.ca_directory
+    $certDir = Get-AbsolutePath $global:Config.paths.certs_directory
     if (-not (Test-Path $certDir)) { New-Item -ItemType Directory -Path $certDir -Force | Out-Null }
 
-    $interKeyPath = Join-Path $caDir "IntermediateCA.key"
-    $interCrtPath = Join-Path $caDir "IntermediateCA.crt"
+    $pkiState = Get-SystemPkiState
+    $useInter = ($null -ne $pkiState.IntermediateCA)
+
+    if ($useInter) {
+        $interBase    = if ($global:Config.defaults.intermediate_ca.base_filename) { $global:Config.defaults.intermediate_ca.base_filename } else { "IntermediateCA" }
+        $signingKeyPath = Join-Path $caDir "$interBase.key"
+        $signingCrtPath = Join-Path $caDir "$interBase.crt"
+    } else {
+        $rootBase     = if ($global:Config.defaults.root_ca.base_filename) { $global:Config.defaults.root_ca.base_filename } else { "RootCA" }
+        $signingKeyPath = Join-Path $caDir "$rootBase.key"
+        $signingCrtPath = Join-Path $caDir "$rootBase.crt"
+    }
 
     $safeName = $Params.CommonName -replace '[^a-zA-Z0-9\.-]', '_'
-    $svcKeyPath = Join-Path $certDir "$safeName.key"
-    $svcCsrPath = Join-Path $certDir "$safeName.csr"
-    $svcCrtPath = Join-Path $certDir "$safeName.crt"
-    $svcPfxPath = Join-Path $certDir "$safeName.pfx"
+    $svcKeyPath  = Join-Path $certDir "$safeName.key"
+    $svcCsrPath  = Join-Path $certDir "$safeName.csr"
+    $svcCrtPath  = Join-Path $certDir "$safeName.crt"
+    $svcPfxPath  = Join-Path $certDir "$safeName.pfx"
     $certPemOnly = Join-Path $certDir "$safeName.pem"
     $certPemFull = Join-Path $certDir "$safeName.full.pem"
 
     $subj = "/C=$($Params.Country)/ST=$($Params.State)/L=$($Params.Locality)/O=$($Params.Organization)/OU=$($Params.OU)/CN=$($Params.CommonName)"
 
     # 1. Service Key (unverschlüsselt für Server-Dienste)
-    $keyArgs = @("genrsa", "-out", $svcKeyPath, $Params.KeyLength.ToString())
+    $keyArgs = @(
+        "genrsa", "-out",
+        $svcKeyPath, $Params.KeyLength.ToString()
+    )
     Invoke-OpenSSL -Arguments $keyArgs | Out-Null
 
     # 2. CSR Erzeugen
@@ -1037,87 +1188,80 @@ function New-ServiceCertificate {
     # 3. SAN und Extension Config
     $cnfPath = Join-Path $env:TEMP "svc_ext.cnf"
     $sanList = @("DNS:$($Params.CommonName)")
-    if ($null -ne $Params.SANs) {
-        foreach ($san in $Params.SANs) {
-            if ($san -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$') {
-                $sanList += "IP:$san"
-            } else {
-                $sanList += "DNS:$san"
-            }
-        }
+    
+    if ($Params.SANsDNS) {
+        foreach ($dns in $Params.SANsDNS) { $sanList += "DNS:$dns" }
+    }
+    if ($Params.SANsIP) {
+        foreach ($ip in $Params.SANsIP) { $sanList += "IP:$ip" }
     }
     $sanString = $sanList -join ","
+
+    $kuString = if ($Params.KeyUsages -and $Params.KeyUsages.Count -gt 0) { $Params.KeyUsages -join ", " } else { "digitalSignature, keyEncipherment" }
 
     $cnfContent = @"
 [ v3_req ]
 basicConstraints = CA:FALSE
-keyUsage = critical, digitalSignature, keyEncipherment
+keyUsage = critical, $kuString
 extendedKeyUsage = serverAuth, clientAuth
 subjectAltName = $sanString
 "@
     Set-Content -Path $cnfPath -Value $cnfContent -Encoding UTF8
 
     try {
-        # 4. Zertifikat ausstellen via Intermediate CA
+        # 4. Zertifikat signieren
         $signArgs = @(
             "x509", "-req",
             "-in", $svcCsrPath,
-            "-CA", $interCrtPath,
-            "-CAkey", $interKeyPath,
+            "-CA", $signingCrtPath,
+            "-CAkey", $signingKeyPath,
             "-CAcreateserial",
             "-out", $svcCrtPath,
             "-days", $Params.ValidityDays.ToString(),
             "-extfile", $cnfPath,
             "-extensions", "v3_req"
         )
-        if (-not [string]::IsNullOrWhiteSpace($IntermediatePassword)) {
+
+        # Nimmt CaPassword wenn übergeben, erzwingt sonst pass: (verhindert interaktiven Prompt)
+        if (-not [string]::IsNullOrWhiteSpace($CaPassword)) {
             $signArgs += "-passin"
-            $signArgs += "pass:$IntermediatePassword"
+            $signArgs += "pass:$CaPassword"
+        } else {
+            $signArgs += "-passin"
+            $signArgs += "pass:"
         }
+
         Invoke-OpenSSL -Arguments $signArgs | Out-Null
 
         # 5. PFX erstellen (optional geschützt)
-        $pfxPass = if (-not [string]::IsNullOrWhiteSpace($PfxPassword)) { "pass:$PfxPassword" } else { "pass:" }
-        $pfxArgs = @(
-            "pkcs12", "-export",
-            "-out", $svcPfxPath,
-            "-inkey", $svcKeyPath,
-            "-in", $svcCrtPath,
-            "-certfile", $interCrtPath,
-            "-passout", $pfxPass
-        )
-        Invoke-OpenSSL -Arguments $pfxArgs | Out-Null
+        if ($Params.Exports.pfx) {
+            $pfxPassArg = if (-not [string]::IsNullOrWhiteSpace($PfxPassword)) { "pass:$PfxPassword" } else { "pass:" }
+            $pfxArgs = @(
+                "pkcs12", "-export",
+                "-out", $svcPfxPath,
+                "-inkey", $svcKeyPath,
+                "-in", $svcCrtPath,
+                "-certfile", $signingCrtPath,
+                "-passin", "pass:",            # Der Service-Key selbst ist immer unverschlüsselt
+                "-passout", $pfxPassArg
+            )
+            Invoke-OpenSSL -Arguments $pfxArgs | Out-Null
+        }
 
         # 6. PEM-Exporte (Cert Only & Fullchain)
-        # Reine Cert-PEM kopieren/erstellen
-        Copy-Item -Path $svcCrtPath -Destination $certPemOnly -Force
+        if ($Params.Exports.pem_cert) {
+            Copy-Item -Path $svcCrtPath -Destination $certPemOnly -Force
+        }
 
-        # Fullchain PEM (Service-Zertifikat + Intermediate CA) zusammenfügen
-        $crtContent = Get-Content -Path $svcCrtPath -Raw
-        $interCrtContent = Get-Content -Path $interCrtPath -Raw
-        Set-Content -Path $certPemFull -Value "$crtContent`n$interCrtContent" -Encoding UTF8
+        if ($Params.Exports.pem_full) {
+            $crtContent = Get-Content -Path $svcCrtPath -Raw
+            $signingCrtContent = Get-Content -Path $signingCrtPath -Raw
+            Set-Content -Path $certPemFull -Value "$crtContent`n$signingCrtContent" -Encoding UTF8
+        }
 
     } finally {
-        if (Test-Path $cnfPath) { Remove-Item $cnfPath -Force }
-        if (Test-Path $svcCsrPath) { Remove-Item $svcCsrPath -Force }
-    }
-
-    $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($svcCrtPath)
-
-    return @{
-        common_name   = $Params.CommonName
-        sans          = $Params.SANs
-        validity_days = $Params.ValidityDays
-        serial_number = $cert.SerialNumber
-        issued_date   = $cert.NotBefore.ToString("yyyy-MM-dd HH:mm:ss")
-        expiry_date   = $cert.NotAfter.ToString("yyyy-MM-dd HH:mm:ss")
-        thumbprint    = $cert.Thumbprint
-        key_path      = $svcKeyPath
-        crt_path      = $svcCrtPath
-        pem_path      = $certPemOnly
-        fullpem_path  = $certPemFull
-        pfx_path      = $svcPfxPath
-        status        = "Gültig"
+        if (Test-Path $cnfPath) { Remove-Item $cnfPath -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $svcCsrPath) { Remove-Item $svcCsrPath -Force -ErrorAction SilentlyContinue }
     }
 }
 
@@ -1127,13 +1271,12 @@ function Show-PasswordDialog {
         [string]$Prompt = "Bitte gib das Passwort ein:"
     )
 
-    Add-Type -AssemblyName PresentationFramework
-
     $dialog = New-Object System.Windows.Window
     $dialog.Title = $Title
     $dialog.Width = 400
     $dialog.Height = 180
     $dialog.WindowStartupLocation = "CenterOwner"
+    $dialog.Owner = $window
     $dialog.ResizeMode = "NoResize"
     $dialog.ShowInTaskbar = $false
 
@@ -1209,13 +1352,14 @@ try {
 
 if ($global:Config -and $global:Config.paths) {
     # 1. CA-Ordner erstellen (für Root & Intermediate Schlüssel/Zertifikate)
-    if ($global:Config.paths.ca_directory -and -not (Test-Path $global:Config.paths.ca_directory)) {
-        New-Item -ItemType Directory -Path $global:Config.paths.ca_directory -Force | Out-Null
+    $caAbs = Get-AbsolutePath $global:Config.paths.ca_directory
+    if ($caAbs -and -not (Test-Path $caAbs)) {
+        New-Item -ItemType Directory -Path $caAbs -Force | Out-Null
     }
-
     # 2. Zertifikats-Ordner erstellen (für die Service-Zertifikate)
-    if ($global:Config.paths.certs_directory -and -not (Test-Path $global:Config.paths.certs_directory)) {
-        New-Item -ItemType Directory -Path $global:Config.paths.certs_directory -Force | Out-Null
+    $certAbs = Get-AbsolutePath $global:Config.paths.certs_directory
+    if ($certAbs -and -not (Test-Path $certAbs)) {
+        New-Item -ItemType Directory -Path $certAbs -Force | Out-Null
     }
 }
 
@@ -1224,15 +1368,11 @@ $openSslResult = Find-OpenSSL -ConfigPath $global:Config.paths.openssl_exe -MinV
 
 if ($openSslResult -and $openSslResult.Success) {
     $global:Config.paths.openssl_exe = $openSslResult.Path
-}
-else {
+} else {
     [System.Windows.MessageBox]::Show(
         "OpenSSL konnte nicht gefunden oder nicht gestartet werden.",
-        "OpenSSL Fehler",
-        "OK",
-        "Error"
+        "OpenSSL Fehler", "OK", "Error"
     ) | Out-Null
-
     exit
 }
 
@@ -1242,99 +1382,99 @@ $reader   = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($xamlTe
 $window   = [System.Windows.Markup.XamlReader]::Load($reader)
 
 # Controls Mappen
-$MainTabControl         = $window.FindName("MainTabControl")
-$TabDashboard           = $window.FindName("TabDashboard")
-$TabCreateRootCA        = $window.FindName("TabCreateRootCA")
-$TabCreateIntermediate  = $window.FindName("TabCreateIntermediate")
-$TabNewService          = $window.FindName("TabNewService")
-$TabConfig              = $window.FindName("TabConfig")
+$MainTabControl             = $window.FindName("MainTabControl")
+$TabDashboard               = $window.FindName("TabDashboard")
+$TabCreateRootCA            = $window.FindName("TabCreateRootCA")
+$TabCreateIntermediate      = $window.FindName("TabCreateIntermediate")
+$TabNewService              = $window.FindName("TabNewService")
+$TabConfig                  = $window.FindName("TabConfig")
 
-$PanelCaDetails         = $window.FindName("PanelCaDetails")
-$TxtCaMissing           = $window.FindName("TxtCaMissing")
+$PanelCaDetails             = $window.FindName("PanelCaDetails")
+$TxtCaMissing               = $window.FindName("TxtCaMissing")
 
-$TxtRootCaInfo          = $window.FindName("TxtRootCaInfo")
-$TxtRootCaExpiry        = $window.FindName("TxtRootCaExpiry")
-$TxtInterCaInfo         = $window.FindName("TxtInterCaInfo")
-$TxtInterCaExpiry       = $window.FindName("TxtInterCaExpiry")
-$TxtSignModeInfo        = $window.FindName("TxtSignModeInfo")
+$TxtRootCaInfo              = $window.FindName("TxtRootCaInfo")
+$TxtRootCaExpiry            = $window.FindName("TxtRootCaExpiry")
+$TxtInterCaInfo             = $window.FindName("TxtInterCaInfo")
+$TxtInterCaExpiry           = $window.FindName("TxtInterCaExpiry")
+$TxtSignModeInfo            = $window.FindName("TxtSignModeInfo")
 
-$BtnShowCreateRootCA    = $window.FindName("BtnShowCreateRootCA")
-$BtnShowCreateIntermediate = $window.FindName("BtnShowCreateIntermediate")
+$BtnShowCreateRootCA        = $window.FindName("BtnShowCreateRootCA")
+$BtnShowCreateIntermediate  = $window.FindName("BtnShowCreateIntermediate")
 $PanelNoRootForInterWarning = $window.FindName("PanelNoRootForInterWarning")
-$BtnRenewRootCA         = $window.FindName("BtnRenewRootCA")
-$BtnRenewIntermediate   = $window.FindName("BtnRenewIntermediate")
+$BtnRenewRootCA             = $window.FindName("BtnRenewRootCA")
+$BtnRenewIntermediate       = $window.FindName("BtnRenewIntermediate")
 
-$BtnRenewSelected       = $window.FindName("BtnRenewSelected")
-$BtnRenewDue            = $window.FindName("BtnRenewDue")
-$GridServices           = $window.FindName("GridServices")
-$BtnNewService          = $window.FindName("BtnNewService")
-$PanelNoCaWarning       = $window.FindName("PanelNoCaWarning")
+$BtnRenewSelected           = $window.FindName("BtnRenewSelected")
+$BtnRenewDue                = $window.FindName("BtnRenewDue")
+$GridServices               = $window.FindName("GridServices")
+$BtnNewService              = $window.FindName("BtnNewService")
+$PanelNoCaWarning           = $window.FindName("PanelNoCaWarning")
 
 # Form Controls - Root CA
-$TxtRootCn              = $window.FindName("TxtRootCn")
-$TxtRootOrg             = $window.FindName("TxtRootOrg")
-$TxtRootOu              = $window.FindName("TxtRootOu")
-$TxtRootCountry         = $window.FindName("TxtRootCountry")
-$TxtRootState           = $window.FindName("TxtRootState")
-$TxtRootLocality        = $window.FindName("TxtRootLocality")
-$TxtRootDays            = $window.FindName("TxtRootDays")
-$CmbRootAlgorithm       = $window.FindName("CmbRootAlgorithm")
-$CmbRootKeyLength       = $window.FindName("CmbRootKeyLength")
-$TxtRootBaseFilename    = $window.FindName("TxtRootBaseFilename")
-$PwdRootPass            = $window.FindName("PwdRootPass")
-$PwdRootPassConfirm     = $window.FindName("PwdRootPassConfirm")
-$BtnCancelRootCA        = $window.FindName("BtnCancelRootCA")
-$BtnSaveRootCA          = $window.FindName("BtnSaveRootCA")
+$TxtRootCn                  = $window.FindName("TxtRootCn")
+$TxtRootOrg                 = $window.FindName("TxtRootOrg")
+$TxtRootOu                  = $window.FindName("TxtRootOu")
+$TxtRootCountry             = $window.FindName("TxtRootCountry")
+$TxtRootState               = $window.FindName("TxtRootState")
+$TxtRootLocality            = $window.FindName("TxtRootLocality")
+$TxtRootDays                = $window.FindName("TxtRootDays")
+$CmbRootAlgorithm           = $window.FindName("CmbRootAlgorithm")
+$CmbRootKeyLength           = $window.FindName("CmbRootKeyLength")
+$TxtRootBaseFilename        = $window.FindName("TxtRootBaseFilename")
+$PwdRootPass                = $window.FindName("PwdRootPass")
+$PwdRootPassConfirm         = $window.FindName("PwdRootPassConfirm")
+$BtnCancelRootCA            = $window.FindName("BtnCancelRootCA")
+$BtnSaveRootCA              = $window.FindName("BtnSaveRootCA")
 
 # Form Controls - Intermediate CA
-$TxtInterCn             = $window.FindName("TxtInterCn")
-$TxtInterOrg            = $window.FindName("TxtInterOrg")
-$TxtInterDays           = $window.FindName("TxtInterDays")
-$TxtInterPathLen        = $window.FindName("TxtInterPathLen")
-$CmbInterAlgorithm      = $window.FindName("CmbInterAlgorithm")
-$CmbInterKeyLength      = $window.FindName("CmbInterKeyLength")
-$TxtInterBaseFilename   = $window.FindName("TxtInterBaseFilename")
-$PwdInterPass           = $window.FindName("PwdInterPass")
-$PwdInterPassConfirm    = $window.FindName("PwdInterPassConfirm")
-$BtnCancelIntermediate  = $window.FindName("BtnCancelIntermediate")
-$BtnSaveIntermediate    = $window.FindName("BtnSaveIntermediate")
+$TxtInterCn                 = $window.FindName("TxtInterCn")
+$TxtInterOrg                = $window.FindName("TxtInterOrg")
+$TxtInterDays               = $window.FindName("TxtInterDays")
+$TxtInterPathLen            = $window.FindName("TxtInterPathLen")
+$CmbInterAlgorithm          = $window.FindName("CmbInterAlgorithm")
+$CmbInterKeyLength          = $window.FindName("CmbInterKeyLength")
+$TxtInterBaseFilename       = $window.FindName("TxtInterBaseFilename")
+$PwdInterPass               = $window.FindName("PwdInterPass")
+$PwdInterPassConfirm        = $window.FindName("PwdInterPassConfirm")
+$BtnCancelIntermediate      = $window.FindName("BtnCancelIntermediate")
+$BtnSaveIntermediate        = $window.FindName("BtnSaveIntermediate")
 
 # Form Controls - Service Certificate
-$TxtServiceDisplayName  = $window.FindName("TxtServiceDisplayName")
-$TxtServiceCn           = $window.FindName("TxtServiceCn")
-$TxtServiceOrg          = $window.FindName("TxtServiceOrg")
-$TxtServiceOu           = $window.FindName("TxtServiceOu")
-$TxtServiceCountry      = $window.FindName("TxtServiceCountry")
-$TxtServiceLocality     = $window.FindName("TxtServiceLocality")
-$TxtServiceDnsSANs      = $window.FindName("TxtServiceDnsSANs")
-$TxtServiceIpSANs       = $window.FindName("TxtServiceIpSANs")
-$CmbServiceEku          = $window.FindName("CmbServiceEku")
-$CmbServiceAlgorithm    = $window.FindName("CmbServiceAlgorithm")
-$CmbServiceKeyLength    = $window.FindName("CmbServiceKeyLength")
-$ChkKuDigitalSignature  = $window.FindName("ChkKuDigitalSignature")
-$ChkKuKeyEncipherment   = $window.FindName("ChkKuKeyEncipherment")
-$ChkKuDataEncipherment  = $window.FindName("ChkKuDataEncipherment")
-$ChkKuKeyAgreement      = $window.FindName("ChkKuKeyAgreement")
-$TxtServiceDays         = $window.FindName("TxtServiceDays")
-$ChkExportPfx           = $window.FindName("ChkExportPfx")
-$ChkExportCrt           = $window.FindName("ChkExportCrt")
-$ChkExportKey           = $window.FindName("ChkExportKey")
-$ChkExportPemOnly       = $window.FindName("ChkExportPemOnly")
-$ChkExportPemFull       = $window.FindName("ChkExportPemFull")
-$BtnCancelNewService    = $window.FindName("BtnCancelNewService")
-$BtnSaveNewService      = $window.FindName("BtnSaveNewService")
+$TxtServiceDisplayName      = $window.FindName("TxtServiceDisplayName")
+$TxtServiceCn               = $window.FindName("TxtServiceCn")
+$TxtServiceOrg              = $window.FindName("TxtServiceOrg")
+$TxtServiceOu               = $window.FindName("TxtServiceOu")
+$TxtServiceCountry          = $window.FindName("TxtServiceCountry")
+$TxtServiceLocality         = $window.FindName("TxtServiceLocality")
+$TxtServiceDnsSANs          = $window.FindName("TxtServiceDnsSANs")
+$TxtServiceIpSANs           = $window.FindName("TxtServiceIpSANs")
+$CmbServiceEku              = $window.FindName("CmbServiceEku")
+$CmbServiceAlgorithm        = $window.FindName("CmbServiceAlgorithm")
+$CmbServiceKeyLength        = $window.FindName("CmbServiceKeyLength")
+$ChkKuDigitalSignature      = $window.FindName("ChkKuDigitalSignature")
+$ChkKuKeyEncipherment       = $window.FindName("ChkKuKeyEncipherment")
+$ChkKuDataEncipherment      = $window.FindName("ChkKuDataEncipherment")
+$ChkKuKeyAgreement          = $window.FindName("ChkKuKeyAgreement")
+$TxtServiceDays             = $window.FindName("TxtServiceDays")
+$ChkExportPfx               = $window.FindName("ChkExportPfx")
+$ChkExportCrt               = $window.FindName("ChkExportCrt")
+$ChkExportKey               = $window.FindName("ChkExportKey")
+$ChkExportPemOnly           = $window.FindName("ChkExportPemOnly")
+$ChkExportPemFull           = $window.FindName("ChkExportPemFull")
+$BtnCancelNewService        = $window.FindName("BtnCancelNewService")
+$BtnSaveNewService          = $window.FindName("BtnSaveNewService")
 
 # Config Editor Controls
-$TxtConfigEditor        = $window.FindName("TxtConfigEditor")
-$TxtConfigNotice        = $window.FindName("TxtConfigNotice")
-$BtnOpenConfig          = $window.FindName("BtnOpenConfig")
-$BtnBackFromConfig      = $window.FindName("BtnBackFromConfig")
-$BtnImportConfig        = $window.FindName("BtnImportConfig")
-$BtnExportConfig        = $window.FindName("BtnExportConfig")
+$TxtConfigEditor            = $window.FindName("TxtConfigEditor")
+$TxtConfigNotice            = $window.FindName("TxtConfigNotice")
+$BtnOpenConfig              = $window.FindName("BtnOpenConfig")
+$BtnBackFromConfig          = $window.FindName("BtnBackFromConfig")
+$BtnImportConfig            = $window.FindName("BtnImportConfig")
+$BtnExportConfig            = $window.FindName("BtnExportConfig")
 
-$TxtStatus              = $window.FindName("TxtStatus")
+$TxtStatus                  = $window.FindName("TxtStatus")
 
-# --- 9. INITIALISIERUNG & OPENSSL ERGEBNIS SETZEN ---
+# --- 9. INITIALISIERUNG ---
 LoadConfigToForm
 
 if (-not $openSslResult -or -not $openSslResult.Success) {
@@ -1342,10 +1482,9 @@ if (-not $openSslResult -or -not $openSslResult.Success) {
     if ($BtnNewService) { $BtnNewService.IsEnabled = $false }
     if ($BtnShowCreateRootCA) { $BtnShowCreateRootCA.IsEnabled = $false }
 } else {
-    # Pfad in Config & Variable sichern
     $global:Config.paths.openssl_exe = $openSslResult.Path
     Save-ConfigToFile
-    if ($TxtStatus) { 
+    if ($TxtStatus) {
         $TxtStatus.Text = "✅ OpenSSL $($openSslResult.Version) gefunden: $($openSslResult.Path)" 
     }
 }
@@ -1386,7 +1525,6 @@ $BtnOpenConfig.Add_Click({
     $TxtStatus.Text = "Config-Editor geöffnet." 
 })
 
-# EXPORT HANDLER
 $BtnExportConfig.Add_Click({
     $saveFileDialog = New-Object Microsoft.Win32.SaveFileDialog
     $saveFileDialog.Filter = "YAML-Dateien (*.yaml;*.yml)|*.yaml;*.yml|Alle Dateien (*.*)|*.*"
@@ -1439,25 +1577,64 @@ $BtnBackFromConfig.Add_Click({
 
 # RENEW CA HANDLERS
 $BtnRenewRootCA.Add_Click({
-    $passwd = Get-CaPassword -PromptText "Root-CA Passwort zur Erneuerung erforderlich:"
-    if ($passwd) {$global:RootDaysRemaining = 10957
+    try {
+        $passwd = Get-CaPassword -PromptText "Root-CA Passwort zur Erneuerung erforderlich:"
+        if ([string]::IsNullOrWhiteSpace($passwd)) { return }
+
+        $params = @{
+            CommonName   = $global:Config.defaults.root_ca.common_name
+            Organization = $global:Config.defaults.organization
+            OU           = $global:Config.defaults.root_ca.ou
+            Country      = $global:Config.defaults.country
+            State        = $global:Config.defaults.state
+            Locality     = $global:Config.defaults.locality
+            ValidityDays = ([int]$global:Config.defaults.root_ca.validity_days)
+            KeyLength    = [int]$global:Config.defaults.root_ca.key_length
+            BaseFilename = $global:Config.defaults.root_ca.base_filename
+        }
+
+        Renew-RootCA -Password $passwd -Params $params
         Update-DashboardStatus
-        $TxtStatus.Text = "Root-CA wurde erfolgreich erneuert."
+        $TxtStatus.Text = "Root-CA erfolgreich verlängert."
+    } catch {
+        [System.Windows.MessageBox]::Show("Fehler beim Verlängern der Root-CA: $_", "Fehler", "OK", "Error")
     }
 })
 
 $BtnRenewIntermediate.Add_Click({
-    $passwd = Get-CaPassword -PromptText "Root-CA Passwort zur Signierung der Intermediate-CA erforderlich:"
-    if ($passwd) {$global:InterDaysRemaining = 1826
+    try {
+        $rootPasswd = Get-CaPassword -PromptText "Root-CA Passwort zur Signierung erforderlich:"
+        if ([string]::IsNullOrWhiteSpace($rootPasswd)) { return }
+
+    # Falls laut Config ein Passwort existiert, fragen wir danach, sonst entfällt die Abfrage
+    if ($global:Config.defaults.intermediate_ca.has_password) {
+        $interPasswd = Get-CaPassword -PromptText "Intermediate-CA Key-Passwort (falls vergeben, sonst Enter):"
+    } else {
+        $interPasswd = $null # bzw. ConvertTo-SecureString "" -AsPlainText -Force (je nachdem, was Get-CaPassword zurückgibt)
+    }
+
+        $params = @{
+            CommonName   = $global:Config.defaults.intermediate_ca.common_name
+            Organization = $global:Config.defaults.organization
+            OU           = $global:Config.defaults.intermediate_ca.ou
+            Country      = $global:Config.defaults.country
+            State        = $global:Config.defaults.state
+            Locality     = $global:Config.defaults.locality
+            ValidityDays = ([int]$global:Config.defaults.intermediate_ca.validity_days)
+            KeyLength    = [int]$global:Config.defaults.intermediate_ca.key_length
+            PathLen      = [int]$global:Config.defaults.intermediate_ca.pathlen
+            BaseFilename = $global:Config.defaults.intermediate_ca.base_filename
+        }
+
+        Renew-IntermediateCA -RootPassword $rootPasswd -IntermediatePassword $interPasswd -Params $params
         Update-DashboardStatus
-        $TxtStatus.Text = "Intermediate-CA wurde erfolgreich erneuert."
+        $TxtStatus.Text = "Intermediate-CA erfolgreich verlängert."
+    } catch {
+        [System.Windows.MessageBox]::Show("Fehler beim Verlängern der Intermediate-CA: $_", "Fehler", "OK", "Error")
     }
 })
 
-
-# ------------------------------------------------------------------------------
-# Root CA erstellen / speichern
-# ------------------------------------------------------------------------------
+# Root CA Erstellen Handler
 $BtnSaveRootCA.Add_Click({
     try {
         # Validierung der Passwortfelder
@@ -1474,14 +1651,6 @@ $BtnSaveRootCA.Add_Click({
             return
         }
 
-        # Robuste Auswertung der ComboBoxen und Textfelder
-        $keyAlgo = if ($CmbRootAlgorithm -and $CmbRootAlgorithm.Text) { $CmbRootAlgorithm.Text } else { "RSA" }
-        $keyLen  = if ($CmbRootKeyLength -and $CmbRootKeyLength.Text) { $CmbRootKeyLength.Text } else { "4096" }
-        $valDays = 10957
-        if ($TxtRootDays -and -not [string]::IsNullOrWhiteSpace($TxtRootDays.Text)) {
-            [int]::TryParse($TxtRootDays.Text, [ref]$valDays) | Out-Null
-        }
-
         # Parameter aus den Formularfeldern der GUI auslesen
         $params = @{
             CommonName   = $TxtRootCn.Text
@@ -1490,46 +1659,37 @@ $BtnSaveRootCA.Add_Click({
             Country      = $TxtRootCountry.Text
             State        = $TxtRootState.Text
             Locality     = $TxtRootLocality.Text
-            ValidityDays = $valDays
-            KeyAlgorithm = $keyAlgo
-            KeyLength    = $keyLen
+            ValidityDays = [int]$TxtRootDays.Text
+            KeyAlgorithm = if ($CmbRootAlgorithm -and $CmbRootAlgorithm.Text) { $CmbRootAlgorithm.Text } else { "RSA" }
+            KeyLength    = if ($CmbRootKeyLength -and $CmbRootKeyLength.Text) { $CmbRootKeyLength.Text } else { "4096" }
             BaseFilename = $TxtRootBaseFilename.Text.Trim()
         }
 
         # OpenSSL-Funktion aufrufen
-        $rootData = New-RootCA -Password $pass1 -Params $params
+        New-RootCA -Password $pass1 -Params $params
 
-        # Sicherstellen, dass $global:Config und $global:Config.state existieren
-        if ($null -eq $global:Config) {
-            $global:Config = [PSCustomObject]@{}
-        }
-        if ($null -eq $global:Config.state) {
-            $global:Config | Add-Member -MemberType NoteProperty -Name "state" -Value @{} -Force
-        }
-
-        # Zustand (State) und Global State aktualisieren
-        $global:Config.state.root_ca_data = $rootData
-        $global:HasRootCA = $true
-        $global:Config.defaults.root_ca.base_filename = $TxtRootBaseFilename.Text.Trim()
-
+        # Config aktualisieren
+        $global:Config.defaults.root_ca.base_filename = $params.BaseFilename
+        $global:Config.defaults.root_ca.common_name   = $params.CommonName
+        $global:Config.defaults.organization          = $params.Organization
+        $global:Config.defaults.country               = $params.Country
+        $global:Config.defaults.state                 = $params.State
+        $global:Config.defaults.locality              = $params.Locality
+        
         # Konfigurationsdatei speichern
         Save-ConfigToFile
-
         # Oberfläche aktualisieren
         Update-DashboardStatus
 
         # Zurück zum Dashboard
         $MainTabControl.SelectedItem = $TabDashboard
         [System.Windows.MessageBox]::Show("Root-CA wurde erfolgreich mit OpenSSL erstellt!", "Erfolg", "OK", "Information")
-    }
-    catch {
-        [System.Windows.MessageBox]::Show("Fehler beim Erstellen der Root-CA:`n$($_.Exception.ToString())", "Fehler", "OK", "Error")
+    } catch {
+        [System.Windows.MessageBox]::Show("Fehler beim Erstellen der Root-CA:`n$($_.Exception.Message)", "Fehler", "OK", "Error")
     }
 })
 
-# ------------------------------------------------------------------------------
-# Intermediate CA erstellen / speichern
-# ------------------------------------------------------------------------------
+# Intermediate CA Erstellen Handler
 $BtnSaveIntermediate.Add_Click({
     try {
         # Root-Passwort zur Signierung per Dialog abfragen
@@ -1546,10 +1706,6 @@ $BtnSaveIntermediate.Add_Click({
         }
 
         # Parameter aus den Formularfeldern der GUI auslesen
-        $keyAlgo = if ($CmbInterAlgorithm -and $CmbInterAlgorithm.Text) { $CmbInterAlgorithm.Text } else { "RSA" }
-        $keyLen  = if ($CmbInterKeyLength -and $CmbInterKeyLength.Text) { $CmbInterKeyLength.Text } else { "2048" }
-
-        # Parameter aus den Formularfeldern der GUI auslesen
         $params = @{
             CommonName   = $TxtInterCn.Text
             Organization = $TxtInterOrg.Text
@@ -1558,66 +1714,56 @@ $BtnSaveIntermediate.Add_Click({
             State        = $global:Config.defaults.state
             Locality     = $global:Config.defaults.locality
             ValidityDays = [int]$TxtInterDays.Text
-            KeyAlgorithm = $keyAlgo
-            KeyLength    = $keyLen
+            KeyAlgorithm = if ($CmbInterAlgorithm -and $CmbInterAlgorithm.Text) { $CmbInterAlgorithm.Text } else { "RSA" }
+            KeyLength    = if ($CmbInterKeyLength -and $CmbInterKeyLength.Text) { $CmbInterKeyLength.Text } else { "2048" }
             PathLen      = if ($TxtInterPathLen.Text) { [int]$TxtInterPathLen.Text } else { 0 }
             BaseFilename = $TxtInterBaseFilename.Text.Trim()
         }
-
         # OpenSSL-Funktion aufrufen
-        $interData = New-IntermediateCA -RootPassword $rootPass -IntermediatePassword $interPass1 -Params $params
+        New-IntermediateCA -RootPassword $rootPass -IntermediatePassword $interPass1 -Params $params
 
-        if ($null -eq $global:Config.state) {
-            $global:Config | Add-Member -MemberType NoteProperty -Name "state" -Value @{} -Force
-        }
-
-        # Zustand aktualisieren & speichern
-        $global:Config.state.intermediate_ca_data = $interData
-        $global:HasIntermediate     = $true
-        $global:IntermediateHasPass = $interData.has_password
-        $global:Config.defaults.intermediate_ca.base_filename = $TxtInterBaseFilename.Text.Trim()
+        $global:Config.defaults.intermediate_ca.base_filename = $params.BaseFilename
+        $global:Config.defaults.intermediate_ca.common_name   = $params.CommonName
+        $global:Config.defaults.intermediate_ca.has_password  = (-not [string]::IsNullOrWhiteSpace($interPass1))
+        
         Save-ConfigToFile
         Update-DashboardStatus
 
         # Zurück zum Dashboard
         $MainTabControl.SelectedItem = $TabDashboard
         [System.Windows.MessageBox]::Show("Intermediate-CA wurde erfolgreich erstellt und von der Root-CA signiert!", "Erfolg", "OK", "Information")
-    }
-    catch {
+    } catch {
         [System.Windows.MessageBox]::Show("Fehler beim Erstellen der Intermediate-CA:`n$($_.Exception.Message)", "Fehler", "OK", "Error")
     }
 })
 
-# ------------------------------------------------------------------------------
-# Neues Service-Zertifikat ausstellen
-# ------------------------------------------------------------------------------
+# Service Zertifikat Erstellen Handler
 $BtnSaveNewService.Add_Click({
     try {
-        # Prüfen, welche CA aktiv ist (Intermediate oder Root) und Passwort abfragen
-        $caPass = $null
-        $useInter = ($null -ne $global:Config.state.intermediate_ca_data -and $global:Config.state.intermediate_ca_data.status -ne "Ausstehend")
-        
-        if ($useInter -and $global:Config.state.intermediate_ca_data.has_password) {
+        $pkiState = Get-SystemPkiState
+        $useInter = ($null -ne $pkiState.IntermediateCA)
+        $caPass   = $null
+
+        if ($useInter -and $pkiState.IntermediateHasPass) {
             $caPass = Show-PasswordDialog -Title "Intermediate-CA Passwort" -Prompt "Gib das Passwort der Intermediate-CA ein:"
+            if ([string]::IsNullOrWhiteSpace($caPass)) { return }
         } elseif (-not $useInter) {
             $caPass = Show-PasswordDialog -Title "Root-CA Passwort" -Prompt "Gib das Passwort der Root-CA ein:"
+            if ([string]::IsNullOrWhiteSpace($caPass)) { return }
         }
 
-        # SAN Parsing (Smart & Getrennt)
         $dnsInput = if ($TxtServiceDnsSANs) { $TxtServiceDnsSANs.Text } else { "" }
-        $dnsList = $dnsInput.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+        $dnsList  = $dnsInput.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
 
         $ipInput  = if ($TxtServiceIpSANs)  { $TxtServiceIpSANs.Text }  else { "" }
-        $ipList  = $ipInput.Split(',')  | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+        $ipList   = $ipInput.Split(',')  | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
 
-        # Key Usages aus GUI-Checkboxen abfragen
         $selectedKeyUsages = @()
         if ($ChkKuDigitalSignature -and $ChkKuDigitalSignature.IsChecked) { $selectedKeyUsages += "digitalSignature" }
         if ($ChkKuKeyEncipherment  -and $ChkKuKeyEncipherment.IsChecked)  { $selectedKeyUsages += "keyEncipherment" }
         if ($ChkKuDataEncipherment -and $ChkKuDataEncipherment.IsChecked) { $selectedKeyUsages += "dataEncipherment" }
         if ($ChkKuKeyAgreement    -and $ChkKuKeyAgreement.IsChecked)    { $selectedKeyUsages += "keyAgreement" }
 
-        # Parameter zusammenstellen
         $keyAlgo = if ($CmbServiceAlgorithm -and $CmbServiceAlgorithm.Text) { $CmbServiceAlgorithm.Text } else { "RSA" }
         $keyLen  = if ($CmbServiceKeyLength -and $CmbServiceKeyLength.Text) { $CmbServiceKeyLength.Text } else { "2048" }
         $ekuVal  = if ($CmbServiceEku -and $CmbServiceEku.Text) { $CmbServiceEku.Text } else { "TLS Web Server Authentication (serverAuth)" }
@@ -1644,25 +1790,81 @@ $BtnSaveNewService.Add_Click({
                 pem_full = [bool]$ChkExportPemFull.IsChecked
             }
         }
-
-        # OpenSSL-Funktion aufrufen
-        $certData = New-ServiceCertificate -CaPassword $caPass -Params $params
-
-        # Zu den gespeicherten Zertifikaten hinzufügen & speichern
-        if ($null -eq $global:Config.state.services_data) {
-            $global:Config.state.services_data = @()
+        # Splatting-Hashtable für den Funktionsaufruf vorbereiten
+        $splat = @{
+            Params = $params
         }
-        $global:Config.state.services_data += $certData
+
+        # Passwort nur übergeben, wenn laut Config eines existiert und gesetzt ist
+        if ($global:Config.defaults.intermediate_ca.has_password -and $caPass) {
+            $splat['CaPassword'] = $caPass
+        }
+
+        # OpenSSL-Funktion mit Splatting aufrufen
+        New-ServiceCertificate @splat
+
+        # In Soll-Zustand (service_certificates) eintragen, falls nicht vorhanden
+        $exists = $global:Config.service_certificates | Where-Object { $_.common_name -eq $params.CommonName }
+        if (-not $exists) {
+            $newEntry = @{
+                display_name = $params.DisplayName
+                common_name  = $params.CommonName
+                eku          = $params.EKU
+                sans_dns     = $params.SANsDNS
+                sans_ip      = $params.SANsIP
+            }
+            if ($null -eq $global:Config.service_certificates) {
+                $global:Config.service_certificates = @()
+            }
+            $global:Config.service_certificates += $newEntry
+
+        }
 
         Save-ConfigToFile
         Update-DashboardStatus
 
-        # Zurück zum Dashboard
         $MainTabControl.SelectedItem = $TabDashboard
         [System.Windows.MessageBox]::Show("Service-Zertifikat '$($params.CommonName)' wurde erfolgreich erstellt!", "Erfolg", "OK", "Information")
-    }
-    catch {
+    } catch {
         [System.Windows.MessageBox]::Show("Fehler beim Erstellen des Zertifikats:`n$($_.Exception.Message)", "Fehler", "OK", "Error")
+    }
+})
+
+# Reparatur aller fehlerhaften/fehlenden/abgelaufenen Zertifikate
+$BtnRenewDue.Add_Click({
+    try {
+        $pkiState = Get-SystemPkiState
+        
+        # Filtert auf Fehlt, Defekt, Abgelaufen oder Warnung
+        $toRepair = $pkiState.Services | Where-Object { 
+            $_.Status -in @("Fehlt", "Defekt", "Abgelaufen", "Warnung", "Kritisch") 
+        }
+
+        if (-not $toRepair -or $toRepair.Count -eq 0) {
+            [System.Windows.MessageBox]::Show("Alle Zertifikate sind gültig. Keine Reparatur erforderlich.", "Info", "OK", "Information")
+            return
+        }
+
+        # Passwort-Abfrage bei Bedarf
+        $caPass = $null
+        $useInter = ($null -ne $pkiState.IntermediateCA)
+        if ($useInter -and $pkiState.IntermediateHasPass) {
+            $caPass = Show-PasswordDialog -Title "Intermediate-CA Passwort" -Prompt "Gib das Passwort der Intermediate-CA ein:"
+            if ([string]::IsNullOrWhiteSpace($caPass)) { return }
+        } elseif (-not $useInter) {
+            $caPass = Show-PasswordDialog -Title "Root-CA Passwort" -Prompt "Gib das Passwort der Root-CA ein:"
+            if ([string]::IsNullOrWhiteSpace($caPass)) { return }
+        }
+
+        # Ausführen der Re-Issue Engine
+        Repair-ServiceCertificates -CertificatesToRepair $toRepair -CaPassword $caPass
+
+        Update-DashboardStatus
+        $TxtStatus.Text = "Reparatur abgeschlossen: $($toRepair.Count) Zertifikat(e) neu ausgestellt."
+        [System.Windows.MessageBox]::Show("$($toRepair.Count) Zertifikat(e) wurden erfolgreich repariert / neu ausgestellt!", "Erfolg", "OK", "Information")
+
+    } catch {
+        [System.Windows.MessageBox]::Show("Fehler bei der Reparatur:`n$($_.Exception.Message)", "Fehler", "OK", "Error")
     }
 })
 

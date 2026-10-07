@@ -107,8 +107,8 @@
                                       Background="White" BorderBrush="#E1DFDD" VerticalAlignment="Stretch">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="Anzeigename" Binding="{Binding DisplayName}" Width="2*"/>
-                                    <DataGridTextColumn Header="CN / SANs (DNS &amp; IPs)" Binding="{Binding SANs}" Width="5*" />
-                                    <DataGridTextColumn Header="Verwendung (EKU)" Binding="{Binding EKU}" Width="2*" />
+                                    <DataGridTextColumn Header="CN / SANs (DNS &amp; IPs)" Binding="{Binding SANs}" Width="4*" />
+                                    <DataGridTextColumn Header="Verwendung (EKU)" Binding="{Binding EKU}" Width="3*" />
                                     <DataGridTemplateColumn Header="Status" Width="1*">
                                         <DataGridTemplateColumn.HeaderStyle>
                                             <Style TargetType="DataGridColumnHeader">
