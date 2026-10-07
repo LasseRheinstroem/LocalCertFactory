@@ -401,6 +401,7 @@ function Get-SystemPkiState {
 }
 
 function Repair-ServiceCertificates {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "")]
     param(
         [array]$CertificatesToRepair,
         [string]$CaPassword = $null
@@ -436,7 +437,7 @@ function Repair-ServiceCertificates {
         if ($CaPassword) { $splat['CaPassword'] = $CaPassword }
 
         # Erneute Ausstellung ausführen (überschreibt defekte/abgelaufene Dateien sauber)
-        New-ServiceCertificate @splat
+        NewServiceCertificate @splat
     }
 }
 
@@ -868,7 +869,7 @@ keyUsage = critical, digitalSignature, cRLSign, keyCertSign
     }
 }
 
-function Renew-RootCA {
+function RenewRootCA {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "")]
     param(
         [Parameter(Mandatory=$true)][string]$Password,
@@ -911,7 +912,7 @@ keyUsage               = critical, digitalSignature, cRLSign, keyCertSign
     Set-Content -Path $cnfPath -Value $configContent -Encoding UTF8
 
     try {
-        $args = @(
+        $rootCAargs = @(
             "req", "-new", "-x509", "-sha256",
             "-days", $days.ToString(),
             "-key", $rootKeyPath,
@@ -919,14 +920,14 @@ keyUsage               = critical, digitalSignature, cRLSign, keyCertSign
             "-config", $cnfPath,
             "-passin", "pass:$Password"
         )
-        Invoke-OpenSSL -Arguments $args | Out-Null
+        Invoke-OpenSSL -Arguments $rootCAargs | Out-Null
     }
     finally {
         if (Test-Path $cnfPath) { Remove-Item $cnfPath -Force -ErrorAction SilentlyContinue }
     }
 }
 
-function New-IntermediateCA {
+function NewIntermediateCA {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "")]
     param(
         [Parameter(Mandatory=$true)][string]$RootPassword,
@@ -1040,7 +1041,7 @@ keyUsage               = critical, digitalSignature, cRLSign, keyCertSign
     }
 }
 
-function Renew-IntermediateCA {
+function RenewIntermediateCA {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "")]
     param(
         [Parameter(Mandatory=$true)][string]$RootPassword,
@@ -1125,7 +1126,7 @@ keyUsage               = critical, digitalSignature, cRLSign, keyCertSign
     }
 }
 
-function New-ServiceCertificate {
+function NewServiceCertificate {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "")]
     param(
         [Parameter(Mandatory=$false)][string]$CaPassword,
@@ -1190,11 +1191,14 @@ function New-ServiceCertificate {
 
     $kuString = if ($Params.KeyUsages -and $Params.KeyUsages.Count -gt 0) { $Params.KeyUsages -join ", " } else { "digitalSignature, keyEncipherment" }
 
+    # Dynamische EKU-Zeile aufbauen (bleibt leer, falls "none" übergeben wird)
+    $ekuLine = if ($Params.EKU -and $Params.EKU -ne "none") { "extendedKeyUsage = $($Params.EKU)" } else { "" }
+
     $cnfContent = @"
 [ v3_req ]
 basicConstraints = CA:FALSE
 keyUsage = critical, $kuString
-extendedKeyUsage = serverAuth, clientAuth
+$ekuLine
 subjectAltName = $sanString
 "@
     Set-Content -Path $cnfPath -Value $cnfContent -Encoding UTF8
@@ -1395,7 +1399,6 @@ $PanelNoRootForInterWarning = $window.FindName("PanelNoRootForInterWarning")
 $BtnRenewRootCA             = $window.FindName("BtnRenewRootCA")
 $BtnRenewIntermediate       = $window.FindName("BtnRenewIntermediate")
 
-$BtnRenewSelected           = $window.FindName("BtnRenewSelected")
 $BtnRenewDue                = $window.FindName("BtnRenewDue")
 $GridServices               = $window.FindName("GridServices")
 $BtnNewService              = $window.FindName("BtnNewService")
@@ -1783,7 +1786,7 @@ $BtnRenewRootCA.Add_Click({
             BaseFilename = $global:Config.defaults.root_ca.base_filename
         }
 
-        Renew-RootCA -Password $passwd -Params $params
+        RenewRootCA -Password $passwd -Params $params
         Update-DashboardStatus
         $TxtStatus.Text = "Root-CA erfolgreich verlängert."
     } catch {
@@ -1816,7 +1819,7 @@ $BtnRenewIntermediate.Add_Click({
             BaseFilename = $global:Config.defaults.intermediate_ca.base_filename
         }
 
-        Renew-IntermediateCA -RootPassword $rootPasswd -IntermediatePassword $interPasswd -Params $params
+        RenewIntermediateCA -RootPassword $rootPasswd -IntermediatePassword $interPasswd -Params $params
         Update-DashboardStatus
         $TxtStatus.Text = "Intermediate-CA erfolgreich verlängert."
     } catch {
@@ -1910,7 +1913,7 @@ $BtnSaveIntermediate.Add_Click({
             BaseFilename = $TxtInterBaseFilename.Text.Trim()
         }
         # OpenSSL-Funktion aufrufen
-        New-IntermediateCA -RootPassword $rootPass -IntermediatePassword $interPass1 -Params $params
+        NewIntermediateCA -RootPassword $rootPass -IntermediatePassword $interPass1 -Params $params
 
         $global:Config.defaults.intermediate_ca.base_filename = $params.BaseFilename
         $global:Config.defaults.intermediate_ca.common_name   = $params.CommonName
@@ -1956,7 +1959,17 @@ $BtnSaveNewService.Add_Click({
 
         $keyAlgo = if ($CmbServiceAlgorithm -and $CmbServiceAlgorithm.Text) { $CmbServiceAlgorithm.Text } else { "RSA" }
         $keyLen  = if ($CmbServiceKeyLength -and $CmbServiceKeyLength.Text) { $CmbServiceKeyLength.Text } else { "2048" }
-        $ekuVal  = if ($CmbServiceEku -and $CmbServiceEku.Text) { $CmbServiceEku.Text } else { "TLS Web Server Authentication (serverAuth)" }
+        # EKU Mapping von ComboBox-Text auf OpenSSL Schlüsselwörter
+        $ekuRawText = if ($CmbServiceEku -and $CmbServiceEku.Text) { $CmbServiceEku.Text } else { "" }
+
+        $ekuVal = switch -Wildcard ($ekuRawText) {
+            "*serverAuth*" { "serverAuth" }
+            "*clientAuth*" { "clientAuth" }
+            "*Beides*"     { "serverAuth, clientAuth" }
+            "*codeSigning*"{ "codeSigning" }
+            "*Kein EKU*"   { "none" }
+            Default        { "serverAuth" }
+        }
 
         $params = @{
             DisplayName  = $TxtServiceDisplayName.Text
@@ -1991,7 +2004,7 @@ $BtnSaveNewService.Add_Click({
         }
 
         # OpenSSL-Funktion mit Splatting aufrufen
-        New-ServiceCertificate @splat
+        NewServiceCertificate @splat
 
         # In Soll-Zustand (service_certificates) eintragen, falls nicht vorhanden
         $exists = $global:Config.service_certificates | Where-Object { $_.common_name -eq $params.CommonName }

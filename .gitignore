@@ -6,7 +6,6 @@ config.yaml
 
 # Zertifikate
 CA/
-Services/
 *.pfx
 *.pem
 *.crt
