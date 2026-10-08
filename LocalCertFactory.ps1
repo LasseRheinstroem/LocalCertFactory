@@ -327,6 +327,40 @@ function Get-CertDetailsFromFile {
     }
 }
 
+function Get-FormattedEkuFromCert {
+    param([System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert)
+
+    if (-not $Cert) { return "Kein EKU" }
+
+    # Extended Key Usage Extension (OID 2.5.29.37) suchen
+    $ekuExt = $Cert.Extensions | Where-Object { $_.Oid.Value -eq "2.5.29.37" }
+    
+    if (-not $ekuExt) {
+        return "Kein EKU"
+    }
+
+    # Formatierte OIDs/Namen auslesen (z.B. "1.3.6.1.5.5.7.3.1" oder "Server Authentication")
+    $ekuParsed = [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]$ekuExt
+    $usages = $ekuParsed.EnhancedKeyUsages | ForEach-Object { $_.Value }
+
+    $hasServer = $usages -contains "1.3.6.1.5.5.7.3.1"
+    $hasClient = $usages -contains "1.3.6.1.5.5.7.3.2"
+    $hasCode   = $usages -contains "1.3.6.1.5.5.7.3.3"
+
+    if ($hasServer -and $hasClient) {
+        return "Beides (Server + Client Auth)"
+    } elseif ($hasServer) {
+        return "TLS Web Server Authentication (serverAuth)"
+    } elseif ($hasClient) {
+        return "TLS Web Client Authentication (clientAuth)"
+    } elseif ($hasCode) {
+        return "Code Signing (codeSigning)"
+    } else {
+        # Falls eine unbekannte/andere OID enthalten ist, als Fallback den Format-String nutzen
+        return $ekuParsed.Format($false)
+    }
+}
+
 function Get-SystemPkiState {
     $caDir   = Get-AbsolutePath $global:Config.paths.ca_directory
     $certDir = Get-AbsolutePath $global:Config.paths.certs_directory
@@ -413,15 +447,20 @@ function Get-SystemPkiState {
         }
     }
 
-    # 2. Waise .crt-Dateien erfassen, die auf der Festplatte liegen, aber nicht in der Config stehen
+    # 2. Waise .crt-Dateien erfassen (Hilfsdateien .chain.crt und .fullchain.crt ignorieren)
     if (Test-Path $certDir) {
-        $allCrtFiles = Get-ChildItem -Path $certDir -Filter "*.crt"
+        $allCrtFiles = Get-ChildItem -Path $certDir -Filter "*.crt" | 
+            Where-Object { $_.Name -notmatch '\.(chain|fullchain)\.crt$' }
+
         foreach ($file in $allCrtFiles) {
             if ($processedFiles -notcontains $file.FullName) {
                 $certInfo = Get-CertDetailsFromFile -CrtPath $file.FullName -SigningCaCert $activeSigningCert
                 if ($certInfo) {
+                    # EKU in Langversion aus der .crt-Datei auslesen
+                    $detectedEku = Get-FormattedEkuFromCert -Cert $certInfo.RawCert
+
                     $certInfo | Add-Member -NotePropertyName "DisplayName" -NotePropertyValue $certInfo.CommonName -Force
-                    $certInfo | Add-Member -NotePropertyName "EKU" -NotePropertyValue "Unbekannt (Orphan)" -Force
+                    $certInfo | Add-Member -NotePropertyName "EKU" -NotePropertyValue $detectedEku -Force
                     $certInfo.Status = "Orphan"
                     $certInfo.StatusColor = "#8A8886"
                     $state.Services += $certInfo
@@ -1246,7 +1285,18 @@ function NewServiceCertificate {
     $sanString = $sanList -join ","
 
     $kuString = if ($Params.KeyUsages -and $Params.KeyUsages.Count -gt 0) { $Params.KeyUsages -join ", " } else { "digitalSignature, keyEncipherment" }
-    $ekuLine  = if ($Params.EKU -and $Params.EKU -ne "none") { "extendedKeyUsage = $($Params.EKU)" } else { "" }
+
+    # Mapping von GUI-Langtext auf OpenSSL-Syntax
+    $ekuOpenSSL = switch -Wildcard ($Params.EKU) {
+        "*serverAuth*" { "serverAuth" }
+        "*clientAuth*" { "clientAuth" }
+        "*Beides*"     { "serverAuth, clientAuth" }
+        "*codeSigning*"{ "codeSigning" }
+        "*Kein EKU*"   { "none" }
+        "*none*"       { "none" }
+        Default        { $Params.EKU } # Falls bereits ein kurzes Keyword übergeben wurde
+    }
+    $ekuLine = if ($ekuOpenSSL -and $ekuOpenSSL -ne "none") { "extendedKeyUsage = $ekuOpenSSL" } else { "" }
 
     $cnfContent = @"
 [ v3_req ]
@@ -1606,7 +1656,7 @@ switch ($selected.Status) {
         "Orphan" {
             $MenuMainAction.Header      = "Nicht konfiguriert"
             $MenuMainAction.IsEnabled   = $false
-            $MenuExportCustom.IsEnabled = $true
+            $MenuExportCustom.IsEnabled = $false
             $MenuAdoptOrphan.IsEnabled  = $true
             $MenuDeleteCert.IsEnabled   = $true
         }
@@ -2071,16 +2121,9 @@ $BtnSaveNewService.Add_Click({
         # 5. Algorithmus, Schlüssellänge & EKU-Mapping
         $keyAlgo = if ($CmbServiceAlgorithm -and $CmbServiceAlgorithm.Text) { $CmbServiceAlgorithm.Text } else { "RSA" }
         $keyLen  = if ($CmbServiceKeyLength -and $CmbServiceKeyLength.Text) { $CmbServiceKeyLength.Text } else { "2048" }
-        # EKU Mapping von ComboBox-Text auf OpenSSL Schlüsselwörter
-        $ekuRawText = if ($CmbServiceEku -and $CmbServiceEku.Text) { $CmbServiceEku.Text } else { "" }
-        $ekuVal = switch -Wildcard ($ekuRawText) {
-            "*serverAuth*" { "serverAuth" }
-            "*clientAuth*" { "clientAuth" }
-            "*Beides*"     { "serverAuth, clientAuth" }
-            "*codeSigning*"{ "codeSigning" }
-            "*Kein EKU*"   { "none" }
-            Default        { "serverAuth" }
-        }
+        # Welches EKU-Label gewählt wurde (behält den langen GUI-String bei)
+        $ekuText = if ($CmbServiceEku -and $CmbServiceEku.Text) { $CmbServiceEku.Text }else { "TLS Web Server Authentication (serverAuth)" }
+
 
         # 6. Export-Optionen inkl. Chain und Fullchain
         $exportsMap = [ordered]@{
@@ -2103,7 +2146,7 @@ $BtnSaveNewService.Add_Click({
             Locality     = if ($TxtServiceLocality) { $TxtServiceLocality.Text } else { $global:Config.defaults.locality }
             SANsDNS      = $dnsList
             SANsIP       = $ipList
-            EKU          = $ekuVal
+            EKU          = $ekuText
             KeyUsages     = $selectedKeyUsages
             KeyAlgorithm = $keyAlgo
             KeyLength    = $keyLen
