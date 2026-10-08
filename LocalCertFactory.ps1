@@ -72,14 +72,39 @@ defaults:
     key_length: 2048
     default_eku: "TLS Web Server Authentication (serverAuth)"
     exports:
-      pfx: true
+      pfx: false
       crt: true
       key: true
       pem_cert: false
-      pem_full: true
+      pem_full: false
+      chain: false
+      fullchain: true
 
 # Soll-Definition aller angelegten Services
-service_certificates: []
+#service_certificates: []
+service_certificates: # testweise
+  - display_name: "Webserver Intranet testweise"
+    common_name: "web.heimnetz.local"
+    eku: "TLS Web Server Authentication (serverAuth)"
+    validity_days: 365
+    key_algorithm: "RSA"
+    key_length: 2048
+    key_usages:
+      - "digitalSignature"
+      - "keyEncipherment"
+    exports:
+      pfx: false
+      crt: true
+      key: true
+      pem_cert: false
+      pem_full: false
+      chain: false
+      fullchain: true
+    sans_dns:
+      - "web.heimnetz.local"
+      - "www.heimnetz.local"
+    sans_ip:
+      - "192.168.1.10"
 "@
 
 # --- 4. FUNKTIONEN (OPENSSL & CONFIG HELPER) ---
@@ -325,11 +350,19 @@ function Get-SystemPkiState {
         Services       = @()
     }
 
+    # Prüfen, ob Intermediate-CA passwortgeschützt ist
     if (Test-Path $interPaths.KeyPath) {
         $keyContent = Get-Content $interPaths.KeyPath -Raw
         $state.IntermediateHasPass = ($keyContent -match "ENCRYPTED")
     } else {
         $state.IntermediateHasPass = $false
+    }
+    # FIX: Prüfen, ob Root-CA passwortgeschützt ist
+    if (Test-Path $rootPaths.KeyPath) {
+        $keyContent = Get-Content $rootPaths.KeyPath -Raw
+        $state.RootHasPass = ($keyContent -match "ENCRYPTED")
+    } else {
+        $state.RootHasPass = $false
     }
 
     # Tracking-Liste verarbeiteter Dateien
@@ -403,40 +436,68 @@ function Get-SystemPkiState {
 function Repair-ServiceCertificates {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "")]
     param(
-        [array]$CertificatesToRepair,
+        [Parameter(Mandatory=$true)][array]$CertificatesToRepair,
         [string]$CaPassword = $null
     )
 
+    if ($CertificatesToRepair.Count -eq 0) { return }
+
     foreach ($certItem in $CertificatesToRepair) {
-        # Suche passende Soll-Konfiguration in der config.yaml
-        $cfgMatch = $global:Config.service_certificates | Where-Object { $_.common_name -eq $certItem.CommonName }
+        $cn = if ($certItem.CommonName) { $certItem.CommonName } else { $certItem.ToString() }
+
+        # Soll-Eintrag aus config.yaml laden
+        $cfgMatch = $global:Config.service_certificates | Where-Object { $_.common_name -eq $cn }
 
         if (-not $cfgMatch) {
-            Write-Warning "Keine Soll-Konfiguration für '$($certItem.CommonName)' in config.yaml gefunden. Überspringe..."
+            Write-Warning "Keine Soll-Konfiguration für '$cn' in config.yaml gefunden. Erneuerung wird übersprungen."
             continue
         }
 
-        # Parameter für Neuausstellung zusammenbauen
+        # Parameter mit Fallbacks aus $global:Config.defaults bestimmen
+        $validDays = if ($cfgMatch.validity_days) { [int]$cfgMatch.validity_days } else { [int]$global:Config.defaults.services.validity_days }
+        $keyAlg    = if ($cfgMatch.key_algorithm) { $cfgMatch.key_algorithm } else { $global:Config.defaults.services.key_algorithm }
+        $keyLen    = if ($cfgMatch.key_length)    { [int]$cfgMatch.key_length } else { [int]$global:Config.defaults.services.key_length }
+        $ekuRaw    = if ($cfgMatch.eku)           { $cfgMatch.eku } else { $global:Config.defaults.services.default_eku }
+        $usages    = if ($cfgMatch.key_usages)    { $cfgMatch.key_usages } else { @("digitalSignature", "keyEncipherment") }
+        $exports   = if ($cfgMatch.exports)       { $cfgMatch.exports } else { $global:Config.defaults.services.exports }
+
+        # EKU-Mapping für OpenSSL (wandelt Freitext/Klartext in OpenSSL-Kürzel um)
+        $ekuVal = switch -Wildcard ($ekuRaw) {
+            "*serverAuth*" { "serverAuth" }
+            "*clientAuth*" { "clientAuth" }
+            "*Beides*"     { "serverAuth, clientAuth" }
+            "*codeSigning*"{ "codeSigning" }
+            "*Kein EKU*"   { "none" }
+            "*none*"       { "none" }
+            Default        { $ekuRaw } # Falls bereits korrekt als "serverAuth" hinterlegt
+        }
+
         $params = @{
-            DisplayName  = if ($cfgMatch.display_name) { $cfgMatch.display_name } else { $cfgMatch.common_name }
-            CommonName   = $cfgMatch.common_name
+            DisplayName  = if ($cfgMatch.display_name) { $cfgMatch.display_name } else { $cn }
+            CommonName   = $cn
             Organization = $global:Config.defaults.organization
             OU           = $global:Config.defaults.root_ca.ou
             Country      = $global:Config.defaults.country
             Locality     = $global:Config.defaults.locality
-            SANsDNS      = $cfgMatch.sans_dns
-            SANsIP       = $cfgMatch.sans_ip
-            EKU          = if ($cfgMatch.eku) { $cfgMatch.eku } else { "TLS Web Server Authentication (serverAuth)" }
-            ValidityDays = [int]$global:Config.defaults.services.validity_days
-            KeyAlgorithm = $global:Config.defaults.services.key_algorithm
-            KeyLength    = $global:Config.defaults.services.key_length
-            Exports      = $global:Config.defaults.services.exports
+            SANsDNS      = if ($cfgMatch.sans_dns) { $cfgMatch.sans_dns } else { @() }
+            SANsIP       = if ($cfgMatch.sans_ip)  { $cfgMatch.sans_ip }  else { @() }
+            EKU          = $ekuVal
+            ValidityDays = $validDays
+            KeyAlgorithm = $keyAlg
+            KeyLength    = $keyLen
+            KeyUsages    = $usages
+            Exports      = $exports
         }
 
-        $splat = @{ Params = $params }
-        if ($CaPassword) { $splat['CaPassword'] = $CaPassword }
+        $splat = @{
+            Params = $params
+        }
 
-        # Erneute Ausstellung ausführen (überschreibt defekte/abgelaufene Dateien sauber)
+        if ($CaPassword) {
+            $splat['CaPassword'] = $CaPassword
+        }
+
+        # Zertifikat neu erzeugen
         NewServiceCertificate @splat
     }
 }
@@ -598,12 +659,14 @@ function LoadConfigToForm {
     
     Set-ComboBoxByText -ComboBox $CmbServiceAlgorithm -Value $cfg.defaults.services.key_algorithm
     Set-ComboBoxByText -ComboBox $CmbServiceKeyLength -Value $cfg.defaults.services.key_length.ToString()
-    
-    if ($ChkExportPfx)     { $ChkExportPfx.IsChecked     = [bool]$cfg.defaults.services.exports.pfx }
-    if ($ChkExportCrt)     { $ChkExportCrt.IsChecked     = [bool]$cfg.defaults.services.exports.crt }
-    if ($ChkExportKey)     { $ChkExportKey.IsChecked     = [bool]$cfg.defaults.services.exports.key }
-    if ($ChkExportPemOnly) { $ChkExportPemOnly.IsChecked = [bool]$cfg.defaults.services.exports.pem_cert }
-    if ($ChkExportPemFull) { $ChkExportPemFull.IsChecked = [bool]$cfg.defaults.services.exports.pem_full }
+
+    if ($ChkExportPfx)       { $ChkExportPfx.IsChecked       = [bool] $cfg.defaults.services.exports.pfx }
+    if ($ChkExportCrt)       { $ChkExportCrt.IsChecked       = [bool] $cfg.defaults.services.exports.crt }
+    if ($ChkExportKey)       { $ChkExportKey.IsChecked       = [bool] $cfg.defaults.services.exports.key }
+    if ($ChkExportPemOnly)   { $ChkExportPemOnly.IsChecked   = [bool] $cfg.defaults.services.exports.pem_cert }
+    if ($ChkExportPemFull)   { $ChkExportPemFull.IsChecked   = [bool] $cfg.defaults.services.exports.pem_full }
+    if ($ChkExportChain)     { $ChkExportChain.IsChecked     = [bool] $cfg.defaults.services.exports.chain }
+    if ($ChkExportFullChain) { $ChkExportFullChain.IsChecked = [bool] $cfg.defaults.services.exports.fullchain }
 
     if ($TxtConfigEditor) { $TxtConfigEditor.Text = ConvertTo-Yaml -Data $cfg }
 }
@@ -1142,57 +1205,48 @@ function NewServiceCertificate {
     $useInter = ($null -ne $pkiState.IntermediateCA)
 
     if ($useInter) {
-        $interBase    = if ($global:Config.defaults.intermediate_ca.base_filename) { $global:Config.defaults.intermediate_ca.base_filename } else { "IntermediateCA" }
+        $interBase      = if ($global:Config.defaults.intermediate_ca.base_filename) { $global:Config.defaults.intermediate_ca.base_filename } else { "IntermediateCA" }
         $signingKeyPath = Join-Path $caDir "$interBase.key"
         $signingCrtPath = Join-Path $caDir "$interBase.crt"
     } else {
-        $rootBase     = if ($global:Config.defaults.root_ca.base_filename) { $global:Config.defaults.root_ca.base_filename } else { "RootCA" }
+        $rootBase       = if ($global:Config.defaults.root_ca.base_filename) { $global:Config.defaults.root_ca.base_filename } else { "RootCA" }
         $signingKeyPath = Join-Path $caDir "$rootBase.key"
         $signingCrtPath = Join-Path $caDir "$rootBase.crt"
     }
 
-    $safeName = $Params.CommonName -replace '[^a-zA-Z0-9\.-]', '_'
-    $svcKeyPath  = Join-Path $certDir "$safeName.key"
-    $svcCsrPath  = Join-Path $certDir "$safeName.csr"
-    $svcCrtPath  = Join-Path $certDir "$safeName.crt"
-    $svcPfxPath  = Join-Path $certDir "$safeName.pfx"
-    $certPemOnly = Join-Path $certDir "$safeName.pem"
-    $certPemFull = Join-Path $certDir "$safeName.full.pem"
+    $safeName       = $Params.CommonName -replace '[^a-zA-Z0-9\.-]', '_'
+    $svcKeyPath     = Join-Path $certDir "$safeName.key"
+    $svcCsrPath     = Join-Path $certDir "$safeName.csr"
+    $svcCrtPath     = Join-Path $certDir "$safeName.crt"
+    $svcPfxPath     = Join-Path $certDir "$safeName.pfx"
+    $certPemOnly    = Join-Path $certDir "$safeName.pem"
+    $certPemFull    = Join-Path $certDir "$safeName.full.pem"
+    $certChain      = Join-Path $certDir "$safeName.chain.crt"
+    $certFullChain  = Join-Path $certDir "$safeName.fullchain.crt"
 
     $subj = "/C=$($Params.Country)/ST=$($Params.State)/L=$($Params.Locality)/O=$($Params.Organization)/OU=$($Params.OU)/CN=$($Params.CommonName)"
 
-    # 1. Service Key (unverschlüsselt für Server-Dienste)
-    $keyArgs = @(
-        "genrsa", "-out",
-        $svcKeyPath, $Params.KeyLength.ToString()
-    )
+    # 1. Key & CSR Generierung ...
+    $keyArgs = @("genrsa", "-out", $svcKeyPath, $Params.KeyLength.ToString())
     Invoke-OpenSSL -Arguments $keyArgs | Out-Null
 
-    # 2. CSR Erzeugen
     $csrArgs = @(
-        "req", "-new",
-        "-key", $svcKeyPath,
-        "-out", $svcCsrPath,
-        "-subj", $subj
+    	"req", "-new",
+    	"-key", $svcKeyPath,
+    	"-out", $svcCsrPath,
+    	"-subj", $subj
     )
     Invoke-OpenSSL -Arguments $csrArgs | Out-Null
 
-    # 3. SAN und Extension Config
+    # 2. OpenSSL Extensions Config
     $cnfPath = Join-Path $env:TEMP "svc_ext.cnf"
     $sanList = @("DNS:$($Params.CommonName)")
-    
-    if ($Params.SANsDNS) {
-        foreach ($dns in $Params.SANsDNS) { $sanList += "DNS:$dns" }
-    }
-    if ($Params.SANsIP) {
-        foreach ($ip in $Params.SANsIP) { $sanList += "IP:$ip" }
-    }
+    if ($Params.SANsDNS) { foreach ($dns in $Params.SANsDNS) { $sanList += "DNS:$dns" } }
+    if ($Params.SANsIP)  { foreach ($ip in $Params.SANsIP)   { $sanList += "IP:$ip" } }
     $sanString = $sanList -join ","
 
     $kuString = if ($Params.KeyUsages -and $Params.KeyUsages.Count -gt 0) { $Params.KeyUsages -join ", " } else { "digitalSignature, keyEncipherment" }
-
-    # Dynamische EKU-Zeile aufbauen (bleibt leer, falls "none" übergeben wird)
-    $ekuLine = if ($Params.EKU -and $Params.EKU -ne "none") { "extendedKeyUsage = $($Params.EKU)" } else { "" }
+    $ekuLine  = if ($Params.EKU -and $Params.EKU -ne "none") { "extendedKeyUsage = $($Params.EKU)" } else { "" }
 
     $cnfContent = @"
 [ v3_req ]
@@ -1204,7 +1258,7 @@ subjectAltName = $sanString
     Set-Content -Path $cnfPath -Value $cnfContent -Encoding UTF8
 
     try {
-        # 4. Zertifikat signieren
+        # 3. Signierung
         $signArgs = @(
             "x509", "-req",
             "-in", $svcCsrPath,
@@ -1216,19 +1270,14 @@ subjectAltName = $sanString
             "-extfile", $cnfPath,
             "-extensions", "v3_req"
         )
-
-        # Nimmt CaPassword wenn übergeben, erzwingt sonst pass: (verhindert interaktiven Prompt)
         if (-not [string]::IsNullOrWhiteSpace($CaPassword)) {
-            $signArgs += "-passin"
-            $signArgs += "pass:$CaPassword"
+            $signArgs += @("-passin", "pass:$CaPassword")
         } else {
-            $signArgs += "-passin"
-            $signArgs += "pass:"
+            $signArgs += @("-passin", "pass:")
         }
-
         Invoke-OpenSSL -Arguments $signArgs | Out-Null
 
-        # 5. PFX erstellen (optional geschützt)
+        # 4. PFX Export (falls in Config/GUI gewählt)
         if ($Params.Exports.pfx) {
             $pfxPassArg = if (-not [string]::IsNullOrWhiteSpace($PfxPassword)) { "pass:$PfxPassword" } else { "pass:" }
             $pfxArgs = @(
@@ -1237,21 +1286,30 @@ subjectAltName = $sanString
                 "-inkey", $svcKeyPath,
                 "-in", $svcCrtPath,
                 "-certfile", $signingCrtPath,
-                "-passin", "pass:",            # Der Service-Key selbst ist immer unverschlüsselt
+                "-passin", "pass:",
                 "-passout", $pfxPassArg
             )
             Invoke-OpenSSL -Arguments $pfxArgs | Out-Null
         }
 
-        # 6. PEM-Exporte (Cert Only & Fullchain)
+        # 5. PEM / Chain / Fullchain Exporte
         if ($Params.Exports.pem_cert) {
             Copy-Item -Path $svcCrtPath -Destination $certPemOnly -Force
         }
 
-        if ($Params.Exports.pem_full) {
+        if ($Params.Exports.chain) {
+            # Nur die Zertifikatskette der herausgebenden CAs
+            Copy-Item -Path $signingCrtPath -Destination $certChain -Force
+        }
+
+        if ($Params.Exports.fullchain -or $Params.Exports.pem_full) {
+            # Service-Zertifikat + Signing-CA Zertifikat
             $crtContent = Get-Content -Path $svcCrtPath -Raw
             $signingCrtContent = Get-Content -Path $signingCrtPath -Raw
-            Set-Content -Path $certPemFull -Value "$crtContent`n$signingCrtContent" -Encoding UTF8
+            $fullContent = "$crtContent`n$signingCrtContent"
+
+            if ($Params.Exports.fullchain) { Set-Content -Path $certFullChain -Value $fullContent -Encoding UTF8 }
+            if ($Params.Exports.pem_full)   { Set-Content -Path $certPemFull -Value $fullContent -Encoding UTF8 }
         }
 
     } finally {
@@ -1463,6 +1521,8 @@ $ChkExportCrt               = $window.FindName("ChkExportCrt")
 $ChkExportKey               = $window.FindName("ChkExportKey")
 $ChkExportPemOnly           = $window.FindName("ChkExportPemOnly")
 $ChkExportPemFull           = $window.FindName("ChkExportPemFull")
+$ChkExportChain             = $window.FindName("ChkExportChain")
+$ChkExportFullChain         = $window.FindName("ChkExportFullChain")
 $BtnCancelNewService        = $window.FindName("BtnCancelNewService")
 $BtnSaveNewService          = $window.FindName("BtnSaveNewService")
 
@@ -1558,18 +1618,26 @@ $MenuMainAction.Add_Click({
     $selected = $GridServices.SelectedItem
     if (-not $selected -or -not $MenuMainAction.IsEnabled) { return }
 
-    $pkiState = Get-SystemPkiState $useInter = ($null -ne $pkiState.IntermediateCA)
+    $pkiState = Get-SystemPkiState
+    $useInter = ($null -ne $pkiState.IntermediateCA)
     $caPass   = $null
 
-    if ($useInter -and $pkiState.IntermediateHasPass) {
-        $caPass = Show-PasswordDialog -Title "Intermediate-CA Passwort" -Prompt "Gib das Passwort der Intermediate-CA ein:"
-        if ([string]::IsNullOrWhiteSpace($caPass)) { return }
-    } elseif (-not $useInter) {
-        $caPass = Show-PasswordDialog -Title "Root-CA Passwort" -Prompt "Gib das Passwort der Root-CA ein:"
-        if ([string]::IsNullOrWhiteSpace($caPass)) { return }
+    if ($useInter) {
+        # Es soll die Intermediate-CA genutzt werden
+        if ($pkiState.IntermediateHasPass) {
+            $caPass = Show-PasswordDialog -Title "Intermediate-CA Passwort" -Prompt "Gib das Passwort der Intermediate-CA ein:"
+            if ([string]::IsNullOrWhiteSpace($caPass)) { return }
+        }
+        # Wenn IntermediateHasPass $false ist, bleibt $caPass einfach $null/leer und es gibt kein Popup!
+    } else {
+        # Es soll direkt die Root-CA genutzt werden
+        if ($pkiState.RootHasPass) {
+            $caPass = Show-PasswordDialog -Title "Root-CA Passwort" -Prompt "Gib das Passwort der Root-CA ein:"
+            if ([string]::IsNullOrWhiteSpace($caPass)) { return }
+        }
     }
 
-    Repair-ServiceCertificates -CertificatesToRepair @($selected) -CaPassword$caPass
+    Repair-ServiceCertificates -CertificatesToRepair @($selected) -CaPassword $caPass
     Update-DashboardStatus
     [System.Windows.MessageBox]::Show("Aktion für '$($selected.CommonName)' wurde erfolgreich ausgeführt!", "Erfolg", "OK", "Information")
 })
@@ -1632,6 +1700,7 @@ $MenuExportCustom.Add_Click({
 })
 
 # Orphan in config.yaml übernehmen
+# Korrigierter Handler für den Orphan-Import
 $MenuAdoptOrphan.Add_Click({
     $selected = $GridServices.SelectedItem
     if (-not $selected -or $selected.Status -ne "Orphan") { return }
@@ -1640,22 +1709,48 @@ $MenuAdoptOrphan.Add_Click({
     $sansDns  = @($sansList | Where-Object { $_ -notmatch '^\d+\.\d+\.\d+\.\d+$' -and $_ -ne "" })
     $sansIp   = @($sansList | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' })
 
-    $newSvc = [ordered]@{
-        display_name = $selected.CommonName
-        common_name  = $selected.CommonName
-        eku          = $selected.EKU
-        sans_dns     = $sansDns
-        sans_ip      = $sansIp
+    # Standardwerte aus $global:Config.defaults.services als Fallback laden
+    $defaultSvc = $global:Config.defaults.services
+
+    # EKU bereinigen (falls der Text aus dem Grid z. B. "Unbekannt (Orphan)" lautet)
+    $ekuVal = if ($selected.EKU -and $selected.EKU -notmatch "Unbekannt") { 
+        $selected.EKU 
+    } else { 
+        if ($defaultSvc.default_eku) { $defaultSvc.default_eku } else { "TLS Web Server Authentication (serverAuth)" }
     }
 
-    if ($null -eq $global:Config.service_certificates) {$global:Config.service_certificates = @()
+    $newSvc = [ordered]@{
+        display_name  = $selected.CommonName
+        common_name   = $selected.CommonName
+        eku           = $ekuVal
+        validity_days = if ($defaultSvc.validity_days) { [int]$defaultSvc.validity_days } else { 365 }
+        key_algorithm = if ($defaultSvc.key_algorithm) { $defaultSvc.key_algorithm } else { "RSA" }
+        key_length    = if ($defaultSvc.key_length) { [int]$defaultSvc.key_length } else { 2048 }
+        key_usages    = @("digitalSignature", "keyEncipherment")
+        exports       = if ($defaultSvc.exports) { $defaultSvc.exports } else {
+            [ordered]@{
+                pfx       = $false
+                crt       = $true
+                key       = $true
+                pem_cert  = $false
+                pem_full  = $false
+                chain     = $false
+                fullchain = $true
+            }
+        }
+        sans_dns      = $sansDns
+        sans_ip       = $sansIp
+    }
+
+    if ($null -eq $global:Config.service_certificates) {
+        $global:Config.service_certificates = @()
     }
 
     $global:Config.service_certificates += $newSvc
     Save-ConfigToFile
     
     Update-DashboardStatus
-    [System.Windows.MessageBox]::Show("Zertifikat '$($selected.CommonName)' wurde erfolgreich in die config.yaml übernommen!", "Erfolg", "OK", "Information")
+    [System.Windows.MessageBox]::Show("Zertifikat '$($selected.CommonName)' wurde erfolgreich mit vollständigen Parametern in die config.yaml übernommen!", "Erfolg", "OK", "Information")
 })
 
 # Zertifikats-Dateien löschen
@@ -1933,35 +2028,51 @@ $BtnSaveIntermediate.Add_Click({
 # Service Zertifikat Erstellen Handler
 $BtnSaveNewService.Add_Click({
     try {
+        # 1. Validierung
+        if ([string]::IsNullOrWhiteSpace($TxtServiceCn.Text)) {
+            [System.Windows.MessageBox]::Show("Bitte gib einen Common Name (CN) ein.", "Validierungsfehler", "OK", "Warning")
+            return
+        }
+
+        # 2. CA-Passwortabfrage basierend auf PKI-Status
         $pkiState = Get-SystemPkiState
         $useInter = ($null -ne $pkiState.IntermediateCA)
         $caPass   = $null
 
-        if ($useInter -and $pkiState.IntermediateHasPass) {
-            $caPass = Show-PasswordDialog -Title "Intermediate-CA Passwort" -Prompt "Gib das Passwort der Intermediate-CA ein:"
-            if ([string]::IsNullOrWhiteSpace($caPass)) { return }
-        } elseif (-not $useInter) {
-            $caPass = Show-PasswordDialog -Title "Root-CA Passwort" -Prompt "Gib das Passwort der Root-CA ein:"
-            if ([string]::IsNullOrWhiteSpace($caPass)) { return }
+        if ($useInter) {
+            # Es soll die Intermediate-CA genutzt werden
+            if ($pkiState.IntermediateHasPass) {
+                $caPass = Show-PasswordDialog -Title "Intermediate-CA Passwort" -Prompt "Gib das Passwort der Intermediate-CA ein:"
+                if ([string]::IsNullOrWhiteSpace($caPass)) { return }
+            }
+            # Wenn IntermediateHasPass $false ist, bleibt $caPass einfach $null/leer und es gibt kein Popup!
+        } else {
+            # Es soll direkt die Root-CA genutzt werden
+            if ($pkiState.RootHasPass) {
+                $caPass = Show-PasswordDialog -Title "Root-CA Passwort" -Prompt "Gib das Passwort der Root-CA ein:"
+                if ([string]::IsNullOrWhiteSpace($caPass)) { return }
+            }
         }
 
+        # 3. SANs aufbereiten
         $dnsInput = if ($TxtServiceDnsSANs) { $TxtServiceDnsSANs.Text } else { "" }
         $dnsList  = $dnsInput.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
 
         $ipInput  = if ($TxtServiceIpSANs)  { $TxtServiceIpSANs.Text }  else { "" }
         $ipList   = $ipInput.Split(',')  | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
 
+        # 4. Key Usages sammeln
         $selectedKeyUsages = @()
         if ($ChkKuDigitalSignature -and $ChkKuDigitalSignature.IsChecked) { $selectedKeyUsages += "digitalSignature" }
         if ($ChkKuKeyEncipherment  -and $ChkKuKeyEncipherment.IsChecked)  { $selectedKeyUsages += "keyEncipherment" }
         if ($ChkKuDataEncipherment -and $ChkKuDataEncipherment.IsChecked) { $selectedKeyUsages += "dataEncipherment" }
         if ($ChkKuKeyAgreement    -and $ChkKuKeyAgreement.IsChecked)    { $selectedKeyUsages += "keyAgreement" }
 
+        # 5. Algorithmus, Schlüssellänge & EKU-Mapping
         $keyAlgo = if ($CmbServiceAlgorithm -and $CmbServiceAlgorithm.Text) { $CmbServiceAlgorithm.Text } else { "RSA" }
         $keyLen  = if ($CmbServiceKeyLength -and $CmbServiceKeyLength.Text) { $CmbServiceKeyLength.Text } else { "2048" }
         # EKU Mapping von ComboBox-Text auf OpenSSL Schlüsselwörter
         $ekuRawText = if ($CmbServiceEku -and $CmbServiceEku.Text) { $CmbServiceEku.Text } else { "" }
-
         $ekuVal = switch -Wildcard ($ekuRawText) {
             "*serverAuth*" { "serverAuth" }
             "*clientAuth*" { "clientAuth" }
@@ -1971,63 +2082,88 @@ $BtnSaveNewService.Add_Click({
             Default        { "serverAuth" }
         }
 
+        # 6. Export-Optionen inkl. Chain und Fullchain
+        $exportsMap = [ordered]@{
+            pfx       = if ($ChkExportPfx)       { [bool]$ChkExportPfx.IsChecked }       else { $false }
+            crt       = if ($ChkExportCrt)       { [bool]$ChkExportCrt.IsChecked }       else { $true }
+            key       = if ($ChkExportKey)       { [bool]$ChkExportKey.IsChecked }       else { $true }
+            pem_cert  = if ($ChkExportPemOnly)   { [bool]$ChkExportPemOnly.IsChecked }   else { $false }
+            pem_full  = if ($ChkExportPemFull)   { [bool]$ChkExportPemFull.IsChecked }   else { $false }
+            chain     = if ($ChkExportChain)     { [bool]$ChkExportChain.IsChecked }     else { $false }
+            fullchain = if ($ChkExportFullChain) { [bool]$ChkExportFullChain.IsChecked } else { $true }
+        }
+
+        # 7. Parameter-Hashtable aufbauen
         $params = @{
-            DisplayName  = $TxtServiceDisplayName.Text
+            DisplayName  = if ($TxtServiceDisplayName) { $TxtServiceDisplayName.Text } else { $TxtServiceCn.Text }
             CommonName   = $TxtServiceCn.Text
-            Organization = $TxtServiceOrg.Text
-            OU           = $TxtServiceOu.Text
-            Country      = $TxtServiceCountry.Text
-            Locality     = $TxtServiceLocality.Text
+            Organization = if ($TxtServiceOrg)  { $TxtServiceOrg.Text }  else { $global:Config.defaults.organization }
+            OU           = if ($TxtServiceOu -and -not [string]::IsNullOrWhiteSpace($TxtServiceOu.Text)) { $TxtServiceOu.Text } else { $global:Config.defaults.root_ca.ou }
+            Country      = if ($TxtServiceCountry)  { $TxtServiceCountry.Text }  else { $global:Config.defaults.country }
+            Locality     = if ($TxtServiceLocality) { $TxtServiceLocality.Text } else { $global:Config.defaults.locality }
             SANsDNS      = $dnsList
             SANsIP       = $ipList
             EKU          = $ekuVal
-            KeyUsages    = $selectedKeyUsages
+            KeyUsages     = $selectedKeyUsages
             KeyAlgorithm = $keyAlgo
             KeyLength    = $keyLen
             ValidityDays = [int]$TxtServiceDays.Text
-            Exports      = @{
-                pfx      = [bool]$ChkExportPfx.IsChecked
-                crt      = [bool]$ChkExportCrt.IsChecked
-                key      = [bool]$ChkExportKey.IsChecked
-                pem_cert = [bool]$ChkExportPemOnly.IsChecked
-                pem_full = [bool]$ChkExportPemFull.IsChecked
-            }
+            Exports      = $exportsMap
         }
-        # Splatting-Hashtable für den Funktionsaufruf vorbereiten
+
+        # 8. Splatting für den Funktionsaufruf vorbereiten
         $splat = @{
             Params = $params
         }
 
-        # Passwort nur übergeben, wenn laut Config eines existiert und gesetzt ist
-        if ($global:Config.defaults.intermediate_ca.has_password -and $caPass) {
+        # Passwort übergeben, falls benötigt
+        if ($caPass) {
             $splat['CaPassword'] = $caPass
         }
 
-        # OpenSSL-Funktion mit Splatting aufrufen
+        # OpenSSL-Funktion aufrufen
         NewServiceCertificate @splat
 
-        # In Soll-Zustand (service_certificates) eintragen, falls nicht vorhanden
-        $exists = $global:Config.service_certificates | Where-Object { $_.common_name -eq $params.CommonName }
-        if (-not $exists) {
-            $newEntry = @{
-                display_name = $params.DisplayName
-                common_name  = $params.CommonName
-                eku          = $params.EKU
-                sans_dns     = $params.SANsDNS
-                sans_ip      = $params.SANsIP
-            }
-            if ($null -eq $global:Config.service_certificates) {
-                $global:Config.service_certificates = @()
-            }
-            $global:Config.service_certificates += $newEntry
-
+        # 9. Soll-Eintrag für config.yaml erstellen (vollständig)
+        $newEntry = [ordered]@{
+            display_name  = $params.DisplayName
+            common_name   = $params.CommonName
+            eku           = $params.EKU
+            validity_days = $params.ValidityDays
+            key_algorithm = $params.KeyAlgorithm
+            key_length    = $params.KeyLength
+            key_usages    = $params.KeyUsages
+            exports       = $params.Exports
+            sans_dns      = $params.SANsDNS
+            sans_ip       = $params.SANsIP
         }
 
+        if ($null -eq $global:Config.service_certificates) {
+            $global:Config.service_certificates = @()
+        }
+
+        # Aktualisieren falls vorhanden, ansonsten neu anhängen
+        $existingIdx = -1
+        for ($i = 0; $i -lt $global:Config.service_certificates.Count; $i++) {
+            if ($global:Config.service_certificates[$i].common_name -eq $params.CommonName) {
+                $existingIdx = $i
+                break
+            }
+        }
+
+        if ($existingIdx -ge 0) {
+            $global:Config.service_certificates[$existingIdx] = $newEntry
+        } else {
+            $global:Config.service_certificates += $newEntry
+        }
+
+        # 10. Konfiguration speichern und GUI refreshen
         Save-ConfigToFile
         Update-DashboardStatus
 
         $MainTabControl.SelectedItem = $TabDashboard
         [System.Windows.MessageBox]::Show("Service-Zertifikat '$($params.CommonName)' wurde erfolgreich erstellt!", "Erfolg", "OK", "Information")
+
     } catch {
         [System.Windows.MessageBox]::Show("Fehler beim Erstellen des Zertifikats:`n$($_.Exception.Message)", "Fehler", "OK", "Error")
     }
@@ -2051,12 +2187,18 @@ $BtnRenewDue.Add_Click({
         # Passwort-Abfrage bei Bedarf
         $caPass = $null
         $useInter = ($null -ne $pkiState.IntermediateCA)
-        if ($useInter -and $pkiState.IntermediateHasPass) {
-            $caPass = Show-PasswordDialog -Title "Intermediate-CA Passwort" -Prompt "Gib das Passwort der Intermediate-CA ein:"
-            if ([string]::IsNullOrWhiteSpace($caPass)) { return }
-        } elseif (-not $useInter) {
-            $caPass = Show-PasswordDialog -Title "Root-CA Passwort" -Prompt "Gib das Passwort der Root-CA ein:"
-            if ([string]::IsNullOrWhiteSpace($caPass)) { return }
+        if ($useInter) {
+            # Intermediate-CA wird verwendet: Nur fragen, wenn sie ein Passwort hat
+            if ($pkiState.IntermediateHasPass) {
+                $caPass = Show-PasswordDialog -Title "Intermediate-CA Passwort" -Prompt "Gib das Passwort der Intermediate-CA ein:"
+                if ([string]::IsNullOrWhiteSpace($caPass)) { return }
+            }
+        } else {
+            # Root-CA wird verwendet: Nur fragen, wenn sie ein Passwort hat
+            if ($pkiState.RootHasPass) {
+                $caPass = Show-PasswordDialog -Title "Root-CA Passwort" -Prompt "Gib das Passwort der Root-CA ein:"
+                if ([string]::IsNullOrWhiteSpace($caPass)) { return }
+            }
         }
 
         # Ausführen der Re-Issue Engine

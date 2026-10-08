@@ -10,3 +10,4 @@ CA/
 *.pem
 *.crt
 *.key
+*.srl
