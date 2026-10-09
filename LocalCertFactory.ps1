@@ -1537,7 +1537,6 @@ using System.Runtime.InteropServices;
 public class ConsoleHelper {
     [DllImport("kernel32.dll")]
     public static extern IntPtr GetConsoleWindow();
-
     [DllImport("user32.dll")]
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 }
@@ -1545,9 +1544,7 @@ public class ConsoleHelper {
 Add-Type -TypeDefinition $consoleCode
 $window.Add_Loaded({
     $hwnd = [ConsoleHelper]::GetConsoleWindow()
-    if ($hwnd -ne [IntPtr]::Zero) {
-        [ConsoleHelper]::ShowWindow($hwnd, 0) | Out-Null # 0 = SW_HIDE
-    }
+    if ($hwnd -ne [IntPtr]::Zero) { [ConsoleHelper]::ShowWindow($hwnd, 0) | Out-Null }
 })
 
 
