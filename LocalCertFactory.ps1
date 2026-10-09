@@ -1530,6 +1530,27 @@ $xamlText = [System.IO.File]::ReadAllText($xamlPath, [System.Text.Encoding]::UTF
 $reader   = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($xamlText))
 $window   = [System.Windows.Markup.XamlReader]::Load($reader)
 
+# Konsole erst ausblenden, wenn die GUI vollständig geladen ist
+$consoleCode = @"
+using System;
+using System.Runtime.InteropServices;
+public class ConsoleHelper {
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GetConsoleWindow();
+
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+}
+"@
+Add-Type -TypeDefinition $consoleCode
+$window.Add_Loaded({
+    $hwnd = [ConsoleHelper]::GetConsoleWindow()
+    if ($hwnd -ne [IntPtr]::Zero) {
+        [ConsoleHelper]::ShowWindow($hwnd, 0) | Out-Null # 0 = SW_HIDE
+    }
+})
+
+
 # Controls Mappen
 $MainTabControl             = $window.FindName("MainTabControl")
 $TabDashboard               = $window.FindName("TabDashboard")
