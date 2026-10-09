@@ -1,8 +1,22 @@
 ﻿# ==========================================
 # LOCAL CERT FACTORY - MAIN SCRIPT
 # ==========================================
+Write-Output "starte..."
 
 Add-Type -AssemblyName PresentationFramework
+
+# Konsolenfenster verstecken
+if (-not ([System.Management.Automation.PSTypeName]'ConsoleHelper').Type) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class ConsoleHelper {
+    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+    [DllImport("user32.dll")]   public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+}
+"@
+}
+[ConsoleHelper]::ShowWindow([ConsoleHelper]::GetConsoleWindow(), 0) | Out-Null
 
 # --- 0. SCRIPT ENVIRONMENT ---
 $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -928,12 +942,6 @@ function Initialize-GUI {
     $reader   = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($xamlText))
     $window   = [System.Windows.Markup.XamlReader]::Load($reader)
 
-    # Konsole ausblenden bei Loaded
-    $window.Add_Loaded({
-        $hwnd = [ConsoleHelper]::GetConsoleWindow()
-        if ($hwnd -ne [IntPtr]::Zero) { [ConsoleHelper]::ShowWindow($hwnd, 0) | Out-Null }
-    })
-
     # Auto-Mapping aller benannten Controls
     $uiMap = @{ Window = $window }
     $nodes = [System.Collections.Queue]::new()
@@ -1446,18 +1454,6 @@ $global:Config = Initialize-AppConfiguration -ConfigPath $configPath -DefaultCon
 $openSslResult = Get-OpenSSLPath -Config $global:Config
 
 # --- 10. XAML GUI LOAD & ELEMENT MAPPING ---
-# Typen einmalig global deklarieren
-if (-not ([System.Management.Automation.PSTypeName]'ConsoleHelper').Type) {
-    Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public class ConsoleHelper {
-    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
-    [DllImport("user32.dll")]   public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-}
-"@
-}
-
 $script:UI = Initialize-GUI -XamlPath $xamlPath
 
 # --- 11. INITIALISIERUNG ---
