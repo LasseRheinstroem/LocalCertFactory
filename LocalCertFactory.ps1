@@ -1,22 +1,11 @@
 ﻿# ==========================================
 # LOCAL CERT FACTORY - MAIN SCRIPT
 # ==========================================
-Write-Output "starte..."
-
-Add-Type -AssemblyName PresentationFramework
-
 # Konsolenfenster verstecken
-if (-not ([System.Management.Automation.PSTypeName]'ConsoleHelper').Type) {
-    Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public class ConsoleHelper {
-    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
-    [DllImport("user32.dll")]   public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-}
-"@
-}
-[ConsoleHelper]::ShowWindow([ConsoleHelper]::GetConsoleWindow(), 0) | Out-Null
+$asyncMethods = '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();'
+$type = Add-Type -MemberDefinition $asyncMethods -Name 'WinApi' -Namespace 'GUI' -PassThru
+$type::ShowWindow($type::GetConsoleWindow(), 0) | Out-Null
+Add-Type -AssemblyName PresentationFramework
 
 # --- 0. SCRIPT ENVIRONMENT ---
 $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Definition
