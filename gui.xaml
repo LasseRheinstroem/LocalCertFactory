@@ -106,19 +106,24 @@
                                       Background="White" BorderBrush="#E1DFDD" VerticalAlignment="Stretch" SelectionMode="Single">
                                 <DataGrid.ContextMenu>
                                     <ContextMenu x:Name="ServiceContextMenu">
+                                        <!-- NEU: Globale Aktionen oben im Kontextmenü -->
+                                        <MenuItem x:Name="MenuGlobalNewService" Header="Neues Service-Zertifikat erstellen" Icon="➕" />
+                                        <MenuItem x:Name="MenuGlobalRenewDue" Header="Alle fälligen erneuern / reparieren" Icon="🔄" />
+                                        <Separator />
                                         <!-- Dynamischer Haupt-Aktionspunkt -->
-                                        <MenuItem x:Name="MenuMainAction" Header="Verarbeiten" FontWeight="Bold" />
-                                        <MenuItem x:Name="MenuShowDetails" Header="Details anzeigen" />
+                                        <MenuItem x:Name="MenuMainAction" Header="Verarbeiten" FontWeight="Bold" Icon="🔄" />
+                                        <MenuItem x:Name="MenuShowDetails" Header="Details anzeigen" Icon="🔍" />
                                         <!-- Export Untermenü -->
-                                        <MenuItem x:Name="MenuExportCustom" Header="In anderem Format exportieren..." />
+                                        <MenuItem x:Name="MenuExportCustom" Header="In anderem Format exportieren..." Icon="📤" />
                                         <Separator />
                                         <!-- Spezialaktion für Orphans -->
-                                        <MenuItem x:Name="MenuAdoptOrphan" Header="In config.yaml übernehmen" />
+                                        <MenuItem x:Name="MenuAdoptOrphan" Header="In config.yaml übernehmen" Icon="📥" />
                                         <Separator />
                                         <!-- Löschen -->
-                                        <MenuItem x:Name="MenuDeleteCert" Header="Zertifikat-Datei löschen" Foreground="Red" />
+                                        <MenuItem x:Name="MenuDeleteCert" Header="Zertifikat-Datei löschen" Foreground="Red" Icon="🗑️" />
                                     </ContextMenu>
-                                </DataGrid.ContextMenu>                                <DataGrid.Columns>
+                                </DataGrid.ContextMenu>
+                                <DataGrid.Columns>
                                     <DataGridTextColumn Header="Anzeigename" Binding="{Binding DisplayName}" Width="2*"/>
                                     <DataGridTextColumn Header="CN / SANs (DNS &amp; IPs)" Binding="{Binding SANs}" Width="4*" />
                                     <DataGridTextColumn Header="Verwendung (EKU)" Binding="{Binding EKU}" Width="3*" />
@@ -173,7 +178,7 @@
                             <DropShadowEffect BlurRadius="8" ShadowDepth="1" Color="#000000" Opacity="0.1"/>
                         </Border.Effect>
                         <StackPanel>
-                            <TextBlock Text="Neue Root-CA Erstellen" FontSize="18" FontWeight="Bold" Margin="0,0,0,15"/>
+                            <TextBlock x:Name="TxtRootCaTitle" Text="Neue Root-CA Erstellen" FontSize="18" FontWeight="Bold" Margin="0,0,0,15"/>
 
                             <Border Background="#F3F2F1" BorderBrush="#0078D4" BorderThickness="1,0,0,0" Padding="10" Margin="0,0,0,15">
                                 <TextBlock Text="🔒 Die Root-CA ist der vertrauenswürdigste Anker deiner Infrastruktur und MUSS zwingend mit einem Passwort geschützt werden." 
@@ -284,7 +289,7 @@
                             <DropShadowEffect BlurRadius="8" ShadowDepth="1" Color="#000000" Opacity="0.1"/>
                         </Border.Effect>
                         <StackPanel>
-                            <TextBlock Text="Neue Intermediate-CA Erstellen" FontSize="18" FontWeight="Bold" Margin="0,0,0,5"/>
+                            <TextBlock x:Name="TxtInterCaTitle" Text="Neue Intermediate-CA Erstellen" FontSize="18" FontWeight="Bold" Margin="0,0,0,5"/>
                             
                             <Border x:Name="PanelNoRootForInterWarning" Background="#FDE8E8" BorderBrush="#D13438" BorderThickness="1" CornerRadius="4" Padding="10" Margin="0,0,0,15" Visibility="Collapsed">
                                 <TextBlock Text="⚠️ Keine aktive Root-CA gefunden! Eine Intermediate-CA muss von einer bestehenden Root-CA signiert werden." 
@@ -383,7 +388,7 @@
                             <DropShadowEffect BlurRadius="8" ShadowDepth="1" Color="#000000" Opacity="0.1"/>
                         </Border.Effect>
                         <StackPanel>
-                            <TextBlock Text="Neues Service-Zertifikat Konfigurieren" FontSize="18" FontWeight="Bold" Margin="0,0,0,15"/>
+                            <TextBlock x:Name="TxtServiceCaTitle" Text="Neues Service-Zertifikat Konfigurieren" FontSize="18" FontWeight="Bold" Margin="0,0,0,15"/>
 
                             <Border x:Name="PanelNoCaWarning" Background="#FDE8E8" BorderBrush="#D13438" BorderThickness="1" CornerRadius="4" Padding="10" Margin="0,0,0,15" Visibility="Collapsed">
                                 <TextBlock Text="⚠️ Keine aktive CA gefunden! Es muss zuerst eine Root-CA angelegt werden." 
@@ -485,8 +490,8 @@
                             <TextBlock Text="Export-Dateien Generieren" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,5,0,10"/>
                             <WrapPanel Orientation="Horizontal">
                                 <CheckBox x:Name="ChkExportPfx" Content="PFX (.pfx)" IsChecked="False" Margin="0,0,15,5"/>
-                                <CheckBox x:Name="ChkExportCrt" Content="Zertifikat (.crt)" IsChecked="True" Margin="0,0,15,5"/>
-                                <CheckBox x:Name="ChkExportKey" Content="Private Key (.key)" IsChecked="True" Margin="0,0,15,5"/>
+                                <CheckBox x:Name="ChkExportCrt" Content="Zertifikat (.crt)" IsChecked="True" IsEnabled="False" Margin="0,0,15,5"/>
+                                <CheckBox x:Name="ChkExportKey" Content="Private Key (.key)" IsChecked="True" IsEnabled="False" Margin="0,0,15,5"/>
                                 <CheckBox x:Name="ChkExportPemOnly" Content="PEM Zertifikat (.pem)" IsChecked="False" Margin="0,0,15,5"/>
                                 <CheckBox x:Name="ChkExportPemFull" Content="PEM inkl Key (.full.pem)" IsChecked="False" Margin="0,0,15,5"/>
                                 <CheckBox x:Name="ChkExportChain" Content="Chain (chain.crt)" IsChecked="False" Margin="0,0,15,5"/>
