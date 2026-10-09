@@ -71,6 +71,7 @@ defaults:
     key_algorithm: "RSA"
     key_length: 2048
     default_eku: "TLS Web Server Authentication (serverAuth)"
+    ou: Service Certificate
     exports:
       pfx: false
       crt: true
@@ -513,10 +514,7 @@ function Repair-ServiceCertificates {
         $params = @{
             DisplayName  = if ($cfgMatch.display_name) { $cfgMatch.display_name } else { $cn }
             CommonName   = $cn
-            Organization = $global:Config.defaults.organization
-            OU           = $global:Config.defaults.root_ca.ou
-            Country      = $global:Config.defaults.country
-            Locality     = $global:Config.defaults.locality
+            OU           = if ($cfgMatch.ou) { $cfgMatch.ou } else { "Service Certificate" }
             SANsDNS      = if ($cfgMatch.sans_dns) { $cfgMatch.sans_dns } else { @() }
             SANsIP       = if ($cfgMatch.sans_ip)  { $cfgMatch.sans_ip }  else { @() }
             EKU          = $ekuVal
@@ -681,18 +679,15 @@ function LoadConfigToForm {
     if ($TxtInterCn)      { $TxtInterCn.Text      = $cfg.defaults.intermediate_ca.common_name }
     if ($TxtInterOrg)     { $TxtInterOrg.Text     = $cfg.defaults.organization }
     if ($TxtInterDays)    { $TxtInterDays.Text    = $cfg.defaults.intermediate_ca.validity_days.ToString() }
-    if ($TxtInterPathLen -and $null -ne $cfg.defaults.intermediate_ca.pathlen) { 
-        $TxtInterPathLen.Text = $cfg.defaults.intermediate_ca.pathlen.ToString() 
+    if ($TxtInterPathLen -and $null -ne $cfg.defaults.intermediate_ca.pathlen) {
+        $TxtInterPathLen.Text = $cfg.defaults.intermediate_ca.pathlen.ToString()
     }
     Set-ComboBoxByText -ComboBox $CmbInterAlgorithm -Value $cfg.defaults.intermediate_ca.key_algorithm
     Set-ComboBoxByText -ComboBox $CmbInterKeyLength -Value $cfg.defaults.intermediate_ca.key_length.ToString()
     if ($TxtInterBaseFilename) { $TxtInterBaseFilename.Text = $cfg.defaults.intermediate_ca.base_filename }
 
     # Service Defaults & Identitätsattribute
-    if ($TxtServiceOrg)      { $TxtServiceOrg.Text      = $cfg.defaults.organization }
-    if ($TxtServiceOu)       { $TxtServiceOu.Text       = $cfg.defaults.root_ca.ou }
-    if ($TxtServiceCountry)  { $TxtServiceCountry.Text  = $cfg.defaults.country }
-    if ($TxtServiceLocality) { $TxtServiceLocality.Text = $cfg.defaults.locality }
+    if ($TxtServiceOu)       { $TxtServiceOu.Text       = $cfg.defaults.services.ou }
     if ($TxtServiceDays)     { $TxtServiceDays.Text     = $cfg.defaults.services.validity_days.ToString() }
     
     Set-ComboBoxByText -ComboBox $CmbServiceAlgorithm -Value $cfg.defaults.services.key_algorithm
@@ -718,16 +713,18 @@ function LoadServiceCertToForm {
     # Fallbacks aus defaults laden, falls Einzelwerte fehlen
     $defSvc = $global:Config.defaults.services
 
-    $dispName = if ($cfgMatch.display_name) { $cfgMatch.display_name } else { $ServiceItem.DisplayName }
-    $cn       = if ($cfgMatch.common_name) { $cfgMatch.common_name } else { $ServiceItem.CommonName }
+    $dispName = if ($cfgMatch.display_name)  { $cfgMatch.display_name }  else { $ServiceItem.DisplayName }
+    $cn       = if ($cfgMatch.common_name)   { $cfgMatch.common_name }   else { $ServiceItem.CommonName }
+    $ou       = if ($cfgMatch.ou)            { $cfgMatch.ou }            else { $defSvc.ou }
     $days     = if ($cfgMatch.validity_days) { $cfgMatch.validity_days } else { $defSvc.validity_days }
-    $ekuVal   = if ($cfgMatch.eku) { $cfgMatch.eku } else { $defSvc.default_eku }
+    $ekuVal   = if ($cfgMatch.eku)           { $cfgMatch.eku }           else { $defSvc.default_eku }
     $keyAlg   = if ($cfgMatch.key_algorithm) { $cfgMatch.key_algorithm } else { $defSvc.key_algorithm }
-    $keyLen   = if ($cfgMatch.key_length) { $cfgMatch.key_length } else { $defSvc.key_length }
+    $keyLen   = if ($cfgMatch.key_length)    { $cfgMatch.key_length }    else { $defSvc.key_length }
 
     # Formularfelder belegen
     if ($TxtServiceDisplayName) { $TxtServiceDisplayName.Text = $dispName }
     if ($TxtServiceCn)          { $TxtServiceCn.Text          = $cn }
+    if ($TxtServiceOu)          { $TxtServiceOu.Text          = $ou }
     if ($TxtServiceDays)        { $TxtServiceDays.Text        = $days.ToString() }
 
     # SANs laden
@@ -1312,7 +1309,7 @@ function NewServiceCertificate {
     $certChain      = Join-Path $certDir "$safeName.chain.crt"
     $certFullChain  = Join-Path $certDir "$safeName.fullchain.crt"
 
-    $subj = "/C=$($Params.Country)/ST=$($Params.State)/L=$($Params.Locality)/O=$($Params.Organization)/OU=$($Params.OU)/CN=$($Params.CommonName)"
+    $subj    = "/OU=$($Params.OU)/CN=$($Params.CommonName)"
 
     # 1. Key & CSR Generierung ...
     $keyArgs = @("genrsa", "-out", $svcKeyPath, $Params.KeyLength.ToString())
@@ -1606,10 +1603,7 @@ $BtnSaveIntermediate        = $window.FindName("BtnSaveIntermediate")
 $TxtServiceCaTitle          = $window.FindName("TxtServiceCaTitle")
 $TxtServiceDisplayName      = $window.FindName("TxtServiceDisplayName")
 $TxtServiceCn               = $window.FindName("TxtServiceCn")
-$TxtServiceOrg              = $window.FindName("TxtServiceOrg")
 $TxtServiceOu               = $window.FindName("TxtServiceOu")
-$TxtServiceCountry          = $window.FindName("TxtServiceCountry")
-$TxtServiceLocality         = $window.FindName("TxtServiceLocality")
 $TxtServiceDnsSANs          = $window.FindName("TxtServiceDnsSANs")
 $TxtServiceIpSANs           = $window.FindName("TxtServiceIpSANs")
 $CmbServiceEku              = $window.FindName("CmbServiceEku")
@@ -2348,7 +2342,7 @@ $BtnSaveNewService.Add_Click({
         if ($ChkKuDigitalSignature -and $ChkKuDigitalSignature.IsChecked) { $selectedKeyUsages += "digitalSignature" }
         if ($ChkKuKeyEncipherment  -and $ChkKuKeyEncipherment.IsChecked)  { $selectedKeyUsages += "keyEncipherment" }
         if ($ChkKuDataEncipherment -and $ChkKuDataEncipherment.IsChecked) { $selectedKeyUsages += "dataEncipherment" }
-        if ($ChkKuKeyAgreement    -and $ChkKuKeyAgreement.IsChecked)    { $selectedKeyUsages += "keyAgreement" }
+        if ($ChkKuKeyAgreement     -and $ChkKuKeyAgreement.IsChecked)     { $selectedKeyUsages += "keyAgreement" }
 
         # 5. Algorithmus, Schlüssellänge & EKU-Mapping
         $keyAlgo = if ($CmbServiceAlgorithm -and $CmbServiceAlgorithm.Text) { $CmbServiceAlgorithm.Text } else { "RSA" }
@@ -2371,14 +2365,11 @@ $BtnSaveNewService.Add_Click({
         $params = @{
             DisplayName  = if ($TxtServiceDisplayName) { $TxtServiceDisplayName.Text } else { $TxtServiceCn.Text }
             CommonName   = $TxtServiceCn.Text
-            Organization = if ($TxtServiceOrg)  { $TxtServiceOrg.Text }  else { $global:Config.defaults.organization }
-            OU           = if ($TxtServiceOu -and -not [string]::IsNullOrWhiteSpace($TxtServiceOu.Text)) { $TxtServiceOu.Text } else { $global:Config.defaults.root_ca.ou }
-            Country      = if ($TxtServiceCountry)  { $TxtServiceCountry.Text }  else { $global:Config.defaults.country }
-            Locality     = if ($TxtServiceLocality) { $TxtServiceLocality.Text } else { $global:Config.defaults.locality }
+            OU           = $TxtServiceOu.Text
             SANsDNS      = $dnsList
             SANsIP       = $ipList
             EKU          = $ekuText
-            KeyUsages     = $selectedKeyUsages
+            KeyUsages    = $selectedKeyUsages
             KeyAlgorithm = $keyAlgo
             KeyLength    = $keyLen
             ValidityDays = [int]$TxtServiceDays.Text
@@ -2399,6 +2390,7 @@ $BtnSaveNewService.Add_Click({
         $newEntry = [ordered]@{
             display_name  = $params.DisplayName
             common_name   = $params.CommonName
+            ou            = $params.OU
             eku           = $params.EKU
             validity_days = $params.ValidityDays
             key_algorithm = $params.KeyAlgorithm

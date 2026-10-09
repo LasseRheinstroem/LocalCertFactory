@@ -1,0 +1,85 @@
+﻿defaults:
+  organization: Familiennetzwerk
+  locality: Stuttgart
+  state: Baden-Wuerttemberg
+  intermediate_ca:
+    has_password: false
+    common_name: MeinHeimnetz Intermediate CA
+    enabled: true
+    ou: Familiennetzwerk
+    pathlen: 0
+    base_filename: IntermediateCA
+    validity_days: 10
+    key_length: 2048
+    key_algorithm: RSA
+  threshold_days_critical: 7
+  threshold_days_warning: 30
+  country: DE
+  root_ca:
+    key_length: 4096
+    ou: Certificate Authority
+    validity_days: 14
+    common_name: MeinHeimnetz Root CA
+    base_filename: RootCA
+    key_algorithm: RSA
+  services:
+    key_length: 2048
+    exports:
+      key: true
+      fullchain: true
+      pem_cert: false
+      chain: false
+      pem_full: false
+      pfx: false
+      crt: true
+    validity_days: 365
+    default_eku: TLS Web Server Authentication (serverAuth)
+    ou: Service Certificate
+    key_algorithm: RSA
+service_certificates:
+- key_usages:
+  - digitalSignature
+  - keyEncipherment
+  common_name: web.heimnetz.local
+  sans_dns:
+  - web.heimnetz.local
+  - www.heimnetz.local
+  validity_days: 365
+  display_name: Webserver Intranet testweise
+  eku: TLS Web Server Authentication (serverAuth)
+  exports:
+    key: true
+    fullchain: false
+    pem_cert: false
+    chain: false
+    pem_full: false
+    pfx: false
+    crt: true
+  sans_ip: 192.168.1.10
+  key_length: "2048"
+  key_algorithm: RSA
+- key_usages:
+  - digitalSignature
+  - keyEncipherment
+  common_name: pve01.home.internal
+  key_algorithm: RSA
+  sans_dns:
+  - pve01.home.internal
+  - pve.local
+  validity_days: 365
+  display_name: Proxmox Node 01
+  exports:
+    key: true
+    fullchain: true
+    pem_cert: false
+    chain: false
+    pem_full: false
+    pfx: true
+    crt: true
+  sans_ip: 192.168.1.10
+  key_length: "2048"
+  eku: TLS Web Server Authentication (serverAuth)
+paths:
+  ca_directory: CA
+  openssl_exe: C:\Program Files\Git\usr\bin\openssl.exe
+  certs_directory: CA/certs
