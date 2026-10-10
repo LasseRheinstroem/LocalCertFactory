@@ -17,7 +17,7 @@ if (-not (Test-Path $xamlPath)) {
     exit
 }
 
-# --- 1. MODULE & DATEI-PRÜFUNG ---
+# --- 1. MODULE-PRÜFUNG ---
 if (-not (Get-Module -Name powershell-yaml -ListAvailable)) {
     try {
         Write-Host "Das Modul 'powershell-yaml' wird installiert..." -ForegroundColor Yellow
@@ -83,30 +83,7 @@ defaults:
       chain: false
       fullchain: false
 
-#service_certificates: []
-service_certificates: # testweise
-  - display_name: "Webserver Intranet testweise"
-    common_name: "web.heimnetz.local"
-    eku: "TLS Web Server Authentication (serverAuth)"
-    validity_days: 365
-    key_algorithm: "RSA"
-    key_length: 2048
-    key_usages:
-      - "digitalSignature"
-      - "keyEncipherment"
-    exports:
-      pfx: false
-      crt: true
-      key: true
-      pem_cert: false
-      pem_full: false
-      chain: false
-      fullchain: true
-    sans_dns:
-      - "web.heimnetz.local"
-      - "www.heimnetz.local"
-    sans_ip:
-      - "192.168.1.10"
+service_certificates: []
 "@
 
 # --- 3. CRYPTO FUNKTIONEN (Niedergeschriebene Kernlogik zur Erstellung von Zertifikaten und direkten Schnittstellen zu OpenSSL.) ---
@@ -449,10 +426,10 @@ function New-ServiceCertificate {
     Invoke-OpenSSL -Arguments $keyArgs | Out-Null
 
     $csrArgs = @(
-    	"req", "-new",
-    	"-key", $svcKeyPath,
-    	"-out", $svcCsrPath,
-    	"-subj", $subj
+        "req", "-new",
+        "-key", $svcKeyPath,
+        "-out", $svcCsrPath,
+        "-subj", $subj
     )
     Invoke-OpenSSL -Arguments $csrArgs | Out-Null
 
@@ -461,7 +438,7 @@ function New-ServiceCertificate {
     $sanList = @("DNS:$($Params.CommonName)")
     if ($Params.SANsDNS) { foreach ($dns in $Params.SANsDNS) { $sanList += "DNS:$dns" } }
     if ($Params.SANsIP)  { foreach ($ip in $Params.SANsIP)   { $sanList += "IP:$ip" } }
-    $sanString = $sanList -join ","
+    $sanString = ($sanList | Select-Object -Unique) -join ","
 
     $kuString = if ($Params.KeyUsages -and $Params.KeyUsages.Count -gt 0) { $Params.KeyUsages -join ", " } else { "digitalSignature, keyEncipherment" }
 
@@ -538,7 +515,7 @@ subjectAltName = $sanString
             $fullContent = "$crtContent`n$signingCrtContent"
 
             if ($Params.Exports.fullchain) { Set-Content -Path $certFullChain -Value $fullContent -Encoding UTF8 }
-            if ($Params.Exports.pem_full)   { Set-Content -Path $certPemFull -Value $fullContent -Encoding UTF8 }
+            if ($Params.Exports.pem_full) { Set-Content -Path $certPemFull -Value $fullContent -Encoding UTF8 }
         }
 
     } finally {
@@ -977,44 +954,44 @@ function LoadConfigToForm {
 
     # Formularfelder füllen
     # Root CA
-    if ($UI.TxtRootCn)       { $UI.TxtRootCn.Text       = $cfg.defaults.root_ca.common_name }
-    if ($UI.TxtRootOrg)      { $UI.TxtRootOrg.Text      = $cfg.defaults.organization }
-    if ($UI.TxtRootOu)       { $UI.TxtRootOu.Text       = $cfg.defaults.root_ca.ou }
-    if ($UI.TxtRootCountry)  { $UI.TxtRootCountry.Text  = $cfg.defaults.country }
-    if ($UI.TxtRootState)    { $UI.TxtRootState.Text    = $cfg.defaults.state }
-    if ($UI.TxtRootLocality) { $UI.TxtRootLocality.Text = $cfg.defaults.locality }
-    if ($UI.TxtRootDays)     { $UI.TxtRootDays.Text     = $cfg.defaults.root_ca.validity_days.ToString() }
+    $UI.TxtRootCn.Text       = $cfg.defaults.root_ca.common_name
+    $UI.TxtRootOrg.Text      = $cfg.defaults.organization
+    $UI.TxtRootOu.Text       = $cfg.defaults.root_ca.ou
+    $UI.TxtRootCountry.Text  = $cfg.defaults.country
+    $UI.TxtRootState.Text    = $cfg.defaults.state
+    $UI.TxtRootLocality.Text = $cfg.defaults.locality
+    $UI.TxtRootDays.Text     = $cfg.defaults.root_ca.validity_days.ToString()
     Set-ComboBoxByText -ComboBox $UI.CmbRootAlgorithm -Value $cfg.defaults.root_ca.key_algorithm
     Set-ComboBoxByText -ComboBox $UI.CmbRootKeyLength -Value $cfg.defaults.root_ca.key_length.ToString()
-    if ($UI.TxtRootBaseFilename) { $UI.TxtRootBaseFilename.Text = $cfg.defaults.root_ca.base_filename }
+    $UI.TxtRootBaseFilename.Text = $cfg.defaults.root_ca.base_filename
 
     # Intermediate CA
-    if ($UI.TxtInterCn)      { $UI.TxtInterCn.Text      = $cfg.defaults.intermediate_ca.common_name }
-    if ($UI.TxtInterOrg)     { $UI.TxtInterOrg.Text     = $cfg.defaults.organization }
-    if ($UI.TxtInterDays)    { $UI.TxtInterDays.Text    = $cfg.defaults.intermediate_ca.validity_days.ToString() }
+    $UI.TxtInterCn.Text      = $cfg.defaults.intermediate_ca.common_name
+    $UI.TxtInterOrg.Text     = $cfg.defaults.organization
+    $UI.TxtInterDays.Text    = $cfg.defaults.intermediate_ca.validity_days.ToString()
     if ($UI.TxtInterPathLen -and $null -ne $cfg.defaults.intermediate_ca.pathlen) {
         $UI.TxtInterPathLen.Text = $cfg.defaults.intermediate_ca.pathlen.ToString()
     }
     Set-ComboBoxByText -ComboBox $UI.CmbInterAlgorithm -Value $cfg.defaults.intermediate_ca.key_algorithm
     Set-ComboBoxByText -ComboBox $UI.CmbInterKeyLength -Value $cfg.defaults.intermediate_ca.key_length.ToString()
-    if ($UI.TxtInterBaseFilename) { $UI.TxtInterBaseFilename.Text = $cfg.defaults.intermediate_ca.base_filename }
+    $UI.TxtInterBaseFilename.Text = $cfg.defaults.intermediate_ca.base_filename
 
     # Service Defaults & Identitätsattribute
-    if ($UI.TxtServiceOu)       { $UI.TxtServiceOu.Text       = $cfg.defaults.services.ou }
-    if ($UI.TxtServiceDays)     { $UI.TxtServiceDays.Text     = $cfg.defaults.services.validity_days.ToString() }
+    $UI.TxtServiceOu.Text   = $cfg.defaults.services.ou
+    $UI.TxtServiceDays.Text = $cfg.defaults.services.validity_days.ToString()
     
     Set-ComboBoxByText -ComboBox $UI.CmbServiceAlgorithm -Value $cfg.defaults.services.key_algorithm
     Set-ComboBoxByText -ComboBox $UI.CmbServiceKeyLength -Value $cfg.defaults.services.key_length.ToString()
 
-    if ($UI.ChkExportPfx)       { $UI.ChkExportPfx.IsChecked       = [bool] $cfg.defaults.services.exports.pfx }
-    if ($UI.ChkExportCrt)       { $UI.ChkExportCrt.IsChecked       = [bool] $cfg.defaults.services.exports.crt }
-    if ($UI.ChkExportKey)       { $UI.ChkExportKey.IsChecked       = [bool] $cfg.defaults.services.exports.key }
-    if ($UI.ChkExportPemOnly)   { $UI.ChkExportPemOnly.IsChecked   = [bool] $cfg.defaults.services.exports.pem_cert }
-    if ($UI.ChkExportPemFull)   { $UI.ChkExportPemFull.IsChecked   = [bool] $cfg.defaults.services.exports.pem_full }
-    if ($UI.ChkExportChain)     { $UI.ChkExportChain.IsChecked     = [bool] $cfg.defaults.services.exports.chain }
-    if ($UI.ChkExportFullChain) { $UI.ChkExportFullChain.IsChecked = [bool] $cfg.defaults.services.exports.fullchain }
+    $UI.ChkExportPfx.IsChecked       = [bool] $cfg.defaults.services.exports.pfx
+    $UI.ChkExportCrt.IsChecked       = [bool] $cfg.defaults.services.exports.crt
+    $UI.ChkExportKey.IsChecked       = [bool] $cfg.defaults.services.exports.key
+    $UI.ChkExportPemOnly.IsChecked   = [bool] $cfg.defaults.services.exports.pem_cert
+    $UI.ChkExportPemFull.IsChecked   = [bool] $cfg.defaults.services.exports.pem_full
+    $UI.ChkExportChain.IsChecked     = [bool] $cfg.defaults.services.exports.chain
+    $UI.ChkExportFullChain.IsChecked = [bool] $cfg.defaults.services.exports.fullchain
 
-    if ($UI.TxtConfigEditor) { $UI.TxtConfigEditor.Text = ConvertTo-Yaml -Data $cfg }
+    $UI.TxtConfigEditor.Text = ConvertTo-Yaml -Data $cfg
 }
 
 function LoadServiceCertToForm {
@@ -1035,16 +1012,16 @@ function LoadServiceCertToForm {
     $keyLen   = if ($cfgMatch.key_length)    { $cfgMatch.key_length }    else { $defSvc.key_length }
 
     # Formularfelder belegen
-    if ($UI.TxtServiceDisplayName) { $UI.TxtServiceDisplayName.Text = $dispName }
-    if ($UI.TxtServiceCn)          { $UI.TxtServiceCn.Text          = $cn }
-    if ($UI.TxtServiceOu)          { $UI.TxtServiceOu.Text          = $ou }
-    if ($UI.TxtServiceDays)        { $UI.TxtServiceDays.Text        = $days.ToString() }
+    $UI.TxtServiceDisplayName.Text = $dispName
+    $UI.TxtServiceCn.Text          = $cn
+    $UI.TxtServiceOu.Text          = $ou
+    $UI.TxtServiceDays.Text        = $days.ToString()
 
     # SANs laden
     $dnsSANs = if ($cfgMatch.sans_dns) { $cfgMatch.sans_dns -join ", " } else { "" }
     $ipSANs  = if ($cfgMatch.sans_ip)  { $cfgMatch.sans_ip -join ", " }  else { "" }
-    if ($UI.TxtServiceDnsSANs) { $UI.TxtServiceDnsSANs.Text = $dnsSANs }
-    if ($UI.TxtServiceIpSANs)  { $UI.TxtServiceIpSANs.Text  = $ipSANs }
+    $UI.TxtServiceDnsSANs.Text = $dnsSANs
+    $UI.TxtServiceIpSANs.Text  = $ipSANs
 
     # ComboBoxen setzen
     Set-ComboBoxByText -ComboBox $UI.CmbServiceEku       -Value $ekuVal
@@ -1053,20 +1030,20 @@ function LoadServiceCertToForm {
 
     # Key Usages setzen
     $usages = if ($cfgMatch.key_usages) { $cfgMatch.key_usages } else { @("digitalSignature", "keyEncipherment") }
-    if ($UI.ChkKuDigitalSignature) { $UI.ChkKuDigitalSignature.IsChecked = ($usages -contains "digitalSignature") }
-    if ($UI.ChkKuKeyEncipherment)  { $UI.ChkKuKeyEncipherment.IsChecked  = ($usages -contains "keyEncipherment") }
-    if ($UI.ChkKuDataEncipherment) { $UI.ChkKuDataEncipherment.IsChecked = ($usages -contains "dataEncipherment") }
-    if ($UI.ChkKuKeyAgreement)    { $UI.ChkKuKeyAgreement.IsChecked    = ($usages -contains "keyAgreement") }
+    $UI.ChkKuDigitalSignature.IsChecked = ($usages -contains "digitalSignature")
+    $UI.ChkKuKeyEncipherment.IsChecked  = ($usages -contains "keyEncipherment")
+    $UI.ChkKuDataEncipherment.IsChecked = ($usages -contains "dataEncipherment")
+    $UI.ChkKuKeyAgreement.IsChecked     = ($usages -contains "keyAgreement")
 
     # Exporte setzen
     $exp = if ($cfgMatch.exports) { $cfgMatch.exports } else { $defSvc.exports }
-    if ($UI.ChkExportPfx)       { $UI.ChkExportPfx.IsChecked       = [bool]$exp.pfx }
-    if ($UI.ChkExportCrt)       { $UI.ChkExportCrt.IsChecked       = [bool]$exp.crt }
-    if ($UI.ChkExportKey)       { $UI.ChkExportKey.IsChecked       = [bool]$exp.key }
-    if ($UI.ChkExportPemOnly)   { $UI.ChkExportPemOnly.IsChecked   = [bool]$exp.pem_cert }
-    if ($UI.ChkExportPemFull)   { $UI.ChkExportPemFull.IsChecked   = [bool]$exp.pem_full }
-    if ($UI.ChkExportChain)     { $UI.ChkExportChain.IsChecked     = [bool]$exp.chain }
-    if ($UI.ChkExportFullChain) { $UI.ChkExportFullChain.IsChecked = [bool]$exp.fullchain }
+    $UI.ChkExportPfx.IsChecked       = [bool]$exp.pfx
+    $UI.ChkExportCrt.IsChecked       = [bool]$exp.crt
+    $UI.ChkExportKey.IsChecked       = [bool]$exp.key
+    $UI.ChkExportPemOnly.IsChecked   = [bool]$exp.pem_cert
+    $UI.ChkExportPemFull.IsChecked   = [bool]$exp.pem_full
+    $UI.ChkExportChain.IsChecked     = [bool]$exp.chain
+    $UI.ChkExportFullChain.IsChecked = [bool]$exp.fullchain
 }
 
 function Update-ConfigTabState {
@@ -1089,21 +1066,16 @@ function Update-DashboardStatus {
     $canIssueCertificates = $global:HasRootCA
 
     # UI-Sperren
-    if ($UI.BtnNewService) {
-        $UI.BtnNewService.IsEnabled = $canIssueCertificates
-        $UI.BtnNewService.ToolTip = if (-not $canIssueCertificates) { "Es muss zuerst eine Root-CA angelegt werden." } else { $null }
-    }
+    
+    $UI.BtnNewService.IsEnabled = $canIssueCertificates
+    $UI.BtnNewService.ToolTip = if (-not $canIssueCertificates) { "Es muss zuerst eine Root-CA angelegt werden." } else { $null }
     if ($UI.PanelNoCaWarning) { $UI.PanelNoCaWarning.Visibility = if ($canIssueCertificates) { "Collapsed" } else { "Visible" } }
 
-    if ($UI.BtnShowCreateIntermediate) {
-        $UI.BtnShowCreateIntermediate.IsEnabled = $canIssueCertificates
-    }
+    $UI.BtnShowCreateIntermediate.IsEnabled = $canIssueCertificates
     if ($UI.PanelNoRootForInterWarning) { $UI.PanelNoRootForInterWarning.Visibility = if ($canIssueCertificates) { "Collapsed" } else { "Visible" } }
 
     # Grid Datenbindung
-    if ($UI.GridServices) {
-        $UI.GridServices.ItemsSource = $pkiState.Services
-    }
+    $UI.GridServices.ItemsSource = $pkiState.Services
 
     # Root-CA Details anzeigen
     if ($global:HasRootCA) {
@@ -1450,13 +1422,11 @@ LoadConfigToForm
 
 if ($openSslResult.Success) {
     Save-ConfigToFile
-    if ($UI.TxtStatus) { 
-        $UI.TxtStatus.Text = "✅ OpenSSL $($openSslResult.Version) gefunden: $($openSslResult.Path)" 
-    }
+    $UI.TxtStatus.Text = "✅ OpenSSL $($openSslResult.Version) gefunden: $($openSslResult.Path)"
 } else {
-    if ($UI.TxtStatus) { $UI.TxtStatus.Text = "🚨 OpenSSL fehlt oder ist veraltet." }
-    if ($UI.BtnNewService) { $UI.BtnNewService.IsEnabled = $false }
-    if ($UI.BtnShowCreateRootCA) { $UI.BtnShowCreateRootCA.IsEnabled = $false }
+    $UI.TxtStatus.Text = "🚨 OpenSSL fehlt oder ist veraltet."
+    $UI.BtnNewService.IsEnabled = $false
+    $UI.BtnShowCreateRootCA.IsEnabled = $false
 }
 
 Update-DashboardStatus
@@ -1774,13 +1744,13 @@ $UI.BtnSaveNewService.Add_Click({
 
         # 6. Export-Optionen
         $exportsMap = [ordered]@{
-            pfx       = if ($UI.ChkExportPfx)       { [bool]$UI.ChkExportPfx.IsChecked }       else { $false }
-            crt       = $true # Immer erzwungen!
-            key       = $true # Immer erzwungen!
-            pem_cert  = if ($UI.ChkExportPemOnly)   { [bool]$UI.ChkExportPemOnly.IsChecked }   else { $false }
-            pem_full  = if ($UI.ChkExportPemFull)   { [bool]$UI.ChkExportPemFull.IsChecked }   else { $false }
-            chain     = if ($UI.ChkExportChain)     { [bool]$UI.ChkExportChain.IsChecked }     else { $false }
-            fullchain = if ($UI.ChkExportFullChain) { [bool]$UI.ChkExportFullChain.IsChecked } else { $true }
+            pfx       = [bool]$UI.ChkExportPfx.IsChecked
+            crt       = [bool]$UI.ChkExportCrt.IsChecked
+            key       = [bool]$UI.ChkExportKey.IsChecked
+            pem_cert  = [bool]$UI.ChkExportPemOnly.IsChecked
+            pem_full  = [bool]$UI.ChkExportPemFull.IsChecked
+            chain     = [bool]$UI.ChkExportChain.IsChecked
+            fullchain = [bool]$UI.ChkExportFullChain.IsChecked
         }
 
         # 7. Parameter-Hashtable aufbauen
@@ -1933,7 +1903,7 @@ $UI.GridServices.Add_ContextMenuOpening({
         "Fehlt" {
             $UI.MenuMainAction.Header      = "Zertifikat erstmals ausstellen"
             $UI.MenuMainAction.IsEnabled   = $true
-            $UI.MenuDeleteCert.IsEnabled   = $false
+            $UI.MenuDeleteCert.IsEnabled   = $true
         }
         "Orphan" {
             $UI.MenuMainAction.Header      = "Nicht konfiguriert"
@@ -2016,7 +1986,8 @@ $UI.MenuExportCustom.Add_Click({
 
         try {
             # Unterzeichner-CA ermitteln (für Chains / PFX)
-            $pkiState = Get-SystemPkiState $useInter = ($null -ne $pkiState.IntermediateCA)
+            $pkiState = Get-SystemPkiState
+            $useInter = ($null -ne $pkiState.IntermediateCA)
             if ($useInter) {
                 $interBase = if ($global:Config.defaults.intermediate_ca.base_filename) {
                     $global:Config.defaults.intermediate_ca.base_filename
@@ -2132,7 +2103,7 @@ $UI.MenuAdoptOrphan.Add_Click({
                 pem_cert  = $false
                 pem_full  = $false
                 chain     = $false
-                fullchain = $true
+                fullchain = $false
             }
         }
         sans_dns      = $sansDns
@@ -2156,7 +2127,7 @@ $UI.MenuDeleteCert.Add_Click({
     if (-not $selected) { return }
 
     $confirm = [System.Windows.MessageBox]::Show(
-        "Möchtest du die Zertifikats- und Schlüssel-Dateien für '$($selected.CommonName)' wirklich von der Festplatte löschen?",
+        "Möchtest du die Zertifikatsdateien und den Konfigurationseintrag für '$($selected.CommonName)' wirklich unwiderruflich löschen?",
         "Datei löschen bestätigen",
         "YesNo",
         "Warning"
@@ -2175,6 +2146,8 @@ $UI.MenuDeleteCert.Add_Click({
         Remove-Item (Join-Path $certDir "$safeFileName.chain.crt") -ErrorAction SilentlyContinue
         Remove-Item (Join-Path $certDir "$safeFileName.fullchain.crt") -ErrorAction SilentlyContinue
 
+        $global:Config.service_certificates = @($global:Config.service_certificates | Where-Object { $_.common_name -ne $selected.CommonName })
+        Save-ConfigToFile
         Update-DashboardStatus
     }
 })

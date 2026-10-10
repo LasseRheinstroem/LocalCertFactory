@@ -120,7 +120,7 @@
                                         <MenuItem x:Name="MenuAdoptOrphan" Header="In config.yaml übernehmen" Icon="📥" />
                                         <Separator />
                                         <!-- Löschen -->
-                                        <MenuItem x:Name="MenuDeleteCert" Header="Zertifikat-Datei löschen" Foreground="Red" Icon="🗑️" />
+                                        <MenuItem x:Name="MenuDeleteCert" Header="Zertifikat vollständig löschen" Foreground="Red" Icon="🗑️" />
                                     </ContextMenu>
                                 </DataGrid.ContextMenu>
                                 <DataGrid.Columns>
