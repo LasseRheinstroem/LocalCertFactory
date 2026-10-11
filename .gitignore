@@ -2,7 +2,7 @@
 notes/
 
 # Configs
-config.yaml
+*config*.yaml
 
 # Zertifikate
 CA/

@@ -1380,7 +1380,8 @@ function Get-OpenSSLPath {
         $openFileDialog.Title = "Bitte 'openssl.exe' auswählen"
         $openFileDialog.FileName = "openssl.exe"
 
-        if ($openFileDialog.ShowDialog() -eq $true) {$result = &$TestBinary -Path$openFileDialog.FileName
+        if ($openFileDialog.ShowDialog() -eq $true) {
+            $result = &$TestBinary -Path $openFileDialog.FileName
             if (-not $result) {
                 [System.Windows.MessageBox]::Show("Die ausgewählte Datei ist keine gültige OpenSSL-Binärdatei!", "Fehler", "OK", "Error") | Out-Null
             }
@@ -1389,7 +1390,7 @@ function Get-OpenSSLPath {
 
     # 4. Mindestversion prüfen & Ergebnis auswerten
     if ($result -and $result.Version -ge $MinVersion) {
-        $Config.paths.openssl_exe =$result.Path
+        $Config.paths.openssl_exe = $result.Path
         return [PSCustomObject]@{ Success = $true; Path = $result.Path; Version = $result.Version }
     } elseif ($result) {
         [System.Windows.MessageBox]::Show(
@@ -1403,7 +1404,7 @@ function Get-OpenSSLPath {
         ) | Out-Null
     }
 
-    return [PSCustomObject]@{ Success = $false; Path = $null; Version =$null }
+    return [PSCustomObject]@{ Success = $false; Path = $null; Version = $null }
 }
 
 function Get-AbsolutePath {
@@ -2065,7 +2066,7 @@ $UI.MenuExportCustom.Add_Click({
         try {
             # Unterzeichner-CA ermitteln (für Chains / PFX)
             $pkiState = Get-SystemPkiState
-            $useInter = ($null -ne $pkiState.IntermediateCA -and$pkiState.IntermediateCA.Status -ne "Defekt")
+            $useInter = ($null -ne $pkiState.IntermediateCA -and $pkiState.IntermediateCA.Status -ne "Defekt")
             if ($useInter) {
                 $interBase = if ($global:Config.defaults.intermediate_ca.base_filename) {
                     $global:Config.defaults.intermediate_ca.base_filename
