@@ -158,6 +158,29 @@ function Invoke-OpenSSL {
     }
 }
 
+function Test-OpenSslVerify {
+    param(
+        [string]$CertPath,
+        [string]$CaFile,
+        [string]$UntrustedFile = $null
+    )
+    if (-not (Test-Path $CertPath) -or -not (Test-Path $CaFile)) {
+        return $false
+    }
+    try {
+        $argsList = @("verify", "-CAfile", $CaFile)
+        if (-not [string]::IsNullOrWhiteSpace($UntrustedFile) -and (Test-Path $UntrustedFile)) {
+            $argsList += @("-untrusted", $UntrustedFile)
+        }
+        $argsList += $CertPath
+        
+        $output = Invoke-OpenSSL -Arguments $argsList
+        return ($output -match "OK")
+    } catch {
+        return $false
+    }
+}
+
 function New-RootCA {
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "")]
     param(
@@ -397,7 +420,7 @@ function New-ServiceCertificate {
     if (-not (Test-Path $certDir)) { New-Item -ItemType Directory -Path $certDir -Force | Out-Null }
 
     $pkiState = Get-SystemPkiState
-    $useInter = ($null -ne $pkiState.IntermediateCA)
+    $useInter = ($null -ne $pkiState.IntermediateCA -and $pkiState.IntermediateCA.Status -ne "Defekt")
 
     if ($useInter) {
         $interBase      = if ($global:Config.defaults.intermediate_ca.base_filename) { $global:Config.defaults.intermediate_ca.base_filename } else { "IntermediateCA" }
@@ -527,8 +550,7 @@ subjectAltName = $sanString
 # --- 4. SERVICES FUNKTIONEN (High-Level Business-Logik zur Verwaltung, Validierung und Wiederherstellung von Zertifikaten.) ---
 function Get-CertDetailsFromFile {
     param(
-        [string]$CrtPath,
-        $SigningCaCert = $null
+        [string]$CrtPath
     )
 
     if (-not (Test-Path $CrtPath)) { return $null }
@@ -537,6 +559,7 @@ function Get-CertDetailsFromFile {
         $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($CrtPath)
         $now = Get-Date
         $daysRemaining = [math]::Max(0, ($cert.NotAfter - $now).Days)
+        $issuerCN = ($cert.Issuer -replace '.*CN=([^,]+).*', '$1')
 
         # Sprachunabhängige SAN-Extraktion (OID 2.5.29.17)
         $sanList = @()
@@ -553,27 +576,14 @@ function Get-CertDetailsFromFile {
             }
         }
 
-        # Statusermittlung
+        # Statusermittlung (Grundstatus ohne Chain-Prüfung, diese erfolgt in Get-SystemPkiState)
         $warnDays = if ($global:Config.defaults.threshold_days_warning) { [int]$global:Config.defaults.threshold_days_warning } else { 30 }
         $critDays = if ($global:Config.defaults.threshold_days_critical) { [int]$global:Config.defaults.threshold_days_critical } else { 7 }
 
         $status = "Gültig"
         $color  = "#107C41" # Grün
 
-        # 1. Mismatch / Defekt-Prüfung gegen aktive CA
-        $isChainValid = $true
-        if ($SigningCaCert) {
-            # Prüft, ob der Issuer des Zertifikats zum Subject der Unterzeichner-CA passt
-            # sowie Abgleich des Authority Key Identifiers
-            if ($cert.Issuer -ne $SigningCaCert.Subject) {
-                $isChainValid = $false
-            }
-        }
-
-        if (-not $isChainValid) {
-            $status = "Defekt"
-            $color  = "#A80000" # Dunkelrot
-        } elseif ($daysRemaining -le 0) {
+        if ($daysRemaining -le 0) {
             $status = "Abgelaufen"
             $color  = "#D13438" # Rot
         } elseif ($daysRemaining -le $critDays) {
@@ -585,20 +595,21 @@ function Get-CertDetailsFromFile {
         }
 
         return [PSCustomObject]@{
-            IsMissing      = $false
-            Subject        = $cert.Subject
-            Issuer         = $cert.Issuer
-            CommonName     = ($cert.Subject -replace '.*CN=([^,]+).*', '$1')
-            NotBefore      = $cert.NotBefore
-            NotAfter       = $cert.NotAfter
-            ExpiryDate     = $cert.NotAfter.ToString("yyyy-MM-dd")
-            DaysRemaining  = $daysRemaining
-            SerialNumber   = $cert.SerialNumber
-            Thumbprint     = $cert.Thumbprint
-            SANs           = ($sanList -join ", ")
-            Status         = $status
-            StatusColor    = $color
-            RawCert        = $cert
+            IsMissing        = $false
+            Subject          = $cert.Subject
+            Issuer           = $cert.Issuer
+            CommonName       = ($cert.Subject -replace '.*CN=([^,]+).*', '$1')
+            IssuerCommonName = $issuerCN
+            NotBefore        = $cert.NotBefore
+            NotAfter         = $cert.NotAfter
+            ExpiryDate       = $cert.NotAfter.ToString("yyyy-MM-dd")
+            DaysRemaining    = $daysRemaining
+            SerialNumber     = $cert.SerialNumber
+            Thumbprint       = $cert.Thumbprint
+            SANs             = ($sanList -join ", ")
+            Status           = $status
+            StatusColor      = $color
+            RawCert          = $cert
         }
     } catch {
         return $null
@@ -798,11 +809,31 @@ function Get-SystemPkiState {
     $rootPaths  = Get-CaFilePaths -CaDir $caDir -BaseName $rootBase
     $interPaths = Get-CaFilePaths -CaDir $caDir -BaseName $interBase
 
+    # 1. Root-CA laden und per OpenSSL selbst verifizieren (Self-Signed / Key-Mismatch-Erkennung)
     $rootCertDetails  = Get-CertDetailsFromFile -CrtPath $rootPaths.CrtPath
-    $interCertDetails = Get-CertDetailsFromFile -CrtPath $interPaths.CrtPath
+    if ($rootCertDetails) {
+        $rootValid = Test-OpenSslVerify -CertPath $rootPaths.CrtPath -CaFile $rootPaths.CrtPath
+        if (-not $rootValid) {
+            $rootCertDetails.Status = "Defekt"
+            $rootCertDetails.StatusColor = "#A80000" # Dunkelrot
+        }
+    }
 
-    # Aktive Unterzeichner-CA ermitteln (Intermediate bevorzugt, sonst Root)
-    $activeSigningCert = if ($interCertDetails) { $interCertDetails.RawCert } elseif ($rootCertDetails) { $rootCertDetails.RawCert } else { $null }
+    # 2. Intermediate-CA laden und per OpenSSL gegen Root-CA verifizieren
+    $interCertDetails = Get-CertDetailsFromFile -CrtPath $interPaths.CrtPath
+    if ($interCertDetails) {
+        $interValid = $false
+        if ($rootCertDetails -and $rootCertDetails.Status -ne "Defekt") {
+            $interValid = Test-OpenSslVerify -CertPath $interPaths.CrtPath -CaFile $rootPaths.CrtPath
+        }
+        if (-not $interValid) {
+            $interCertDetails.Status = "Defekt"
+            $interCertDetails.StatusColor = "#A80000" # Dunkelrot
+        }
+    }
+
+    # Aktive Unterzeichner-CA ermitteln (Intermediate bevorzugt, aber nur wenn nicht Defekt)
+    $useInterSigning = ($null -ne $interCertDetails -and $interCertDetails.Status -ne "Defekt")
 
     $state = @{
         RootCA         = $rootCertDetails
@@ -817,7 +848,7 @@ function Get-SystemPkiState {
     } else {
         $state.IntermediateHasPass = $false
     }
-    # FIX: Prüfen, ob Root-CA passwortgeschützt ist
+    # Prüfen, ob Root-CA passwortgeschützt ist
     if (Test-Path $rootPaths.KeyPath) {
         $keyContent = Get-Content $rootPaths.KeyPath -Raw
         $state.RootHasPass = ($keyContent -match "ENCRYPTED")
@@ -828,7 +859,7 @@ function Get-SystemPkiState {
     # Tracking-Liste verarbeiteter Dateien
     $processedFiles = @()
 
-    # 1. Alle in config.yaml definierten Services durchgehen (Soll-Zustand)
+    # 3. Alle in config.yaml definierten Services durchgehen (Soll-Zustand) & kryptografisch prüfen
     if ($global:Config.service_certificates) {
         foreach ($cfgSvc in $global:Config.service_certificates) {
             $cn = $cfgSvc.common_name
@@ -836,11 +867,31 @@ function Get-SystemPkiState {
             $expectedCrtPath = Join-Path $certDir "$safeFileName.crt"
 
             if (Test-Path $expectedCrtPath) {
-                # Datei existiert -> Details mit CA-Matching laden
-                $certInfo = Get-CertDetailsFromFile -CrtPath $expectedCrtPath -SigningCaCert $activeSigningCert
+                $certInfo = Get-CertDetailsFromFile -CrtPath $expectedCrtPath
+
+                # Kryptografische Kette per OpenSSL prüfen
+                if ($certInfo -and $rootCertDetails -and $rootCertDetails.Status -ne "Defekt") {
+                    $chainValid = $false
+                    if ($useInterSigning) {
+                        # Signiert durch Intermediate-CA (Trust Anchor = Root, Untrusted = Intermediate)
+                        $chainValid = Test-OpenSslVerify -CertPath $expectedCrtPath -CaFile $rootPaths.CrtPath -UntrustedFile $interPaths.CrtPath
+                    } else {
+                        # Signiert direkt durch Root-CA
+                        $chainValid = Test-OpenSslVerify -CertPath $expectedCrtPath -CaFile $rootPaths.CrtPath
+                    }
+
+                    if (-not $chainValid) {
+                        $certInfo.Status = "Defekt"
+                        $certInfo.StatusColor = "#A80000" # Dunkelrot
+                    }
+                } elseif ($certInfo) {
+                    $certInfo.Status = "Defekt"
+                    $certInfo.StatusColor = "#A80000"
+                }
+
                 $processedFiles += $expectedCrtPath
             } else {
-                # Status 1: FEHLT (Phase 3)
+                # Status: FEHLT
                 $dnsSANs = if ($cfgSvc.sans_dns) { $cfgSvc.sans_dns -join ", " } else { "" }
                 $ipSANs  = if ($cfgSvc.sans_ip)  { $cfgSvc.sans_ip -join ", " }  else { "" }
                 $allSANs = (@($dnsSANs, $ipSANs) | Where-Object { $_ -ne "" }) -join ", "
@@ -873,22 +924,42 @@ function Get-SystemPkiState {
         }
     }
 
-    # 2. Waise .crt-Dateien erfassen (Hilfsdateien .chain.crt und .fullchain.crt ignorieren)
+    # 4. Waise .crt-Dateien erfassen & kryptografisch prüfen
     if (Test-Path $certDir) {
         $allCrtFiles = Get-ChildItem -Path $certDir -Filter "*.crt" | 
             Where-Object { $_.Name -notmatch '\.(chain|fullchain)\.crt$' }
 
         foreach ($file in $allCrtFiles) {
             if ($processedFiles -notcontains $file.FullName) {
-                $certInfo = Get-CertDetailsFromFile -CrtPath $file.FullName -SigningCaCert $activeSigningCert
+                $certInfo = Get-CertDetailsFromFile -CrtPath $file.FullName
+                
+                if ($certInfo -and $rootCertDetails -and $rootCertDetails.Status -ne "Defekt") {
+                    $chainValid = $false
+                    if ($useInterSigning) {
+                        $chainValid = Test-OpenSslVerify -CertPath $file.FullName -CaFile $rootPaths.CrtPath -UntrustedFile $interPaths.CrtPath
+                    } else {
+                        $chainValid = Test-OpenSslVerify -CertPath $file.FullName -CaFile $rootPaths.CrtPath
+                    }
+
+                    if (-not $chainValid) {
+                        $certInfo.Status = "Defekt"
+                        $certInfo.StatusColor = "#A80000"
+                    }
+                } elseif ($certInfo) {
+                    $certInfo.Status = "Defekt"
+                    $certInfo.StatusColor = "#A80000"
+                }
+
                 if ($certInfo) {
-                    # EKU in Langversion aus der .crt-Datei auslesen
                     $detectedEku = Get-FormattedEkuFromCert -Cert $certInfo.RawCert
 
                     $certInfo | Add-Member -NotePropertyName "DisplayName" -NotePropertyValue $certInfo.CommonName -Force
                     $certInfo | Add-Member -NotePropertyName "EKU" -NotePropertyValue $detectedEku -Force
-                    $certInfo.Status = "Orphan"
-                    $certInfo.StatusColor = "#8A8886"
+                    
+                    if ($certInfo.Status -ne "Defekt") {
+                        $certInfo.Status = "Orphan"
+                        $certInfo.StatusColor = "#8A8886"
+                    }
                     $state.Services += $certInfo
                 }
             }
@@ -1102,7 +1173,10 @@ function Update-DashboardStatus {
             $UI.TxtInterCaExpiry.Text = "(Gültig bis: $($inter.ExpiryDate), $($inter.DaysRemaining) Tage restlich)"
             $UI.TxtInterCaExpiry.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString($inter.StatusColor)
 
-            $UI.TxtSignModeInfo.Text = "Aktiv signierende CA: Intermediate-CA"
+            $isInterUsable = ($inter.Status -ne "Defekt")
+            $UI.TxtSignModeInfo.Text = if ($isInterUsable) { "Aktiv signierende CA: Intermediate-CA" } else { "⚠️ Intermediate-CA ist DEFEKT (Kette ungültig)!" }
+            $UI.TxtSignModeInfo.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString($(if ($isInterUsable) { "#0078D4" } else { "#D13438" }))
+
             $UI.BtnShowCreateIntermediate.Visibility = "Collapsed"
             $UI.BtnRenewIntermediate.Visibility      = "Visible"
             Set-ButtonStyle -Button $UI.BtnRenewIntermediate -DaysRemaining $inter.DaysRemaining
@@ -1110,6 +1184,7 @@ function Update-DashboardStatus {
             $UI.TxtInterCaInfo.Text   = "Nicht vorhanden"
             $UI.TxtInterCaExpiry.Text = ""
             $UI.TxtSignModeInfo.Text  = "Aktiv signierende CA: Root-CA"
+            $UI.TxtSignModeInfo.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#0078D4")
             $UI.BtnShowCreateIntermediate.Visibility = "Visible"
             $UI.BtnRenewIntermediate.Visibility      = "Collapsed"
         }
@@ -1496,12 +1571,12 @@ $UI.BtnSaveRootCA.Add_Click({
         Save-ConfigToFile
 
         # 4. GUI & Status zurücksetzen
-        $global:IsRootRenewMode        = $false
+        $global:IsRootRenewMode           = $false
         $UI.TxtRootBaseFilename.IsEnabled = $true
         $UI.CmbRootAlgorithm.IsEnabled    = $true
         $UI.CmbRootKeyLength.IsEnabled    = $true
 
-        $TxtRootCaTitle.Text           = "Neue Root-CA Erstellen"
+        $UI.TxtRootCaTitle.Text           = "Neue Root-CA Erstellen"
         $UI.BtnSaveRootCA.Content         = "🔐 Root-CA Erstellen"
 
         Update-DashboardStatus
@@ -1527,7 +1602,7 @@ $UI.BtnRenewRootCA.Add_Click({
     $UI.PwdRootPassConfirm.Password = ""
     
     # Button-Text und Überschrift für den Renew-Kontext anpassen
-    $TxtRootCaTitle.Text = "Root-CA Erneuern / Verlängern"
+    $UI.TxtRootCaTitle.Text   = "Root-CA Erneuern / Verlängern"
     $UI.BtnSaveRootCA.Content = "🔄 Root-CA Erneuern & Speichern"
     
     # Schlüssel-Parameter sperren (bei Renew von bestehendem Key/Cert sollten Algorithmus & Filename gleich bleiben)
@@ -1547,7 +1622,7 @@ $UI.BtnCancelRootCA.Add_Click({
     $UI.CmbRootAlgorithm.IsEnabled    = $true
     $UI.CmbRootKeyLength.IsEnabled    = $true
 
-    $TxtRootCaTitle.Text           = "Neue Root-CA Erstellen"
+    $UI.TxtRootCaTitle.Text           = "Neue Root-CA Erstellen"
     $UI.BtnSaveRootCA.Content         = "🔐 Root-CA Erstellen"
 
     $UI.MainTabControl.SelectedItem = $UI.TabDashboard
@@ -1614,13 +1689,13 @@ $UI.BtnSaveIntermediate.Add_Click({
         Save-ConfigToFile
 
         # Modus & Steuerelemente zurücksetzen
-        $global:IsInterRenewMode        = $false
+        $global:IsInterRenewMode           = $false
         $UI.TxtInterBaseFilename.IsEnabled = $true
         $UI.CmbInterAlgorithm.IsEnabled    = $true
         $UI.CmbInterKeyLength.IsEnabled    = $true
 
-        $UI.TxtInterCaTitle.Text = "Neue Intermediate-CA Erstellen"
-        $UI.BtnSaveIntermediate.Content         = "🔑 Intermediate-CA Erstellen"
+        $UI.TxtInterCaTitle.Text           = "Neue Intermediate-CA Erstellen"
+        $UI.BtnSaveIntermediate.Content    = "🔑 Intermediate-CA Erstellen"
 
         Update-DashboardStatus
 
@@ -1660,17 +1735,17 @@ $UI.BtnRenewIntermediate.Add_Click({
 
 # Bricht die Erstellung/Bearbeitung der Intermediate CA ab.
 $UI.BtnCancelIntermediate.Add_Click({
-    $global:IsInterRenewMode = $false
+    $global:IsInterRenewMode           = $false
     $UI.TxtInterBaseFilename.IsEnabled = $true
     $UI.CmbInterAlgorithm.IsEnabled    = $true
     $UI.CmbInterKeyLength.IsEnabled    = $true
 
     # Titel und Button auf Standard zurücksetzen
-    $UI.TxtInterCaTitle.Text = "Neue Intermediate-CA Erstellen"
-    $UI.BtnSaveIntermediate.Content         = "🔑 Intermediate-CA Erstellen"
+    $UI.TxtInterCaTitle.Text           = "Neue Intermediate-CA Erstellen"
+    $UI.BtnSaveIntermediate.Content    = "🔑 Intermediate-CA Erstellen"
 
-    $UI.MainTabControl.SelectedItem = $UI.TabDashboard
-    $UI.TxtStatus.Text = "Bereit."
+    $UI.MainTabControl.SelectedItem    = $UI.TabDashboard
+    $UI.TxtStatus.Text                 = "Bereit."
 })
 
 # --- 13. Service Certificate Management (Aktionen für die Erstellung, Speicherung und das Stornieren von Endbenutzer-/Service-Zertifikaten.) ---
@@ -1696,7 +1771,7 @@ $UI.BtnSaveNewService.Add_Click({
 
         # 2. CA-Passwortabfrage basierend auf PKI-Status
         $pkiState = Get-SystemPkiState
-        $useInter = ($null -ne $pkiState.IntermediateCA)
+        $useInter = ($null -ne $pkiState.IntermediateCA -and $pkiState.IntermediateCA.Status -ne "Defekt")
         $caPass   = $null
 
         if ($useInter) {
@@ -1817,10 +1892,10 @@ $UI.BtnSaveNewService.Add_Click({
 
         $global:IsServiceRenewMode      = $false
         $global:SelectedServiceForRenew = $null
-        $UI.TxtServiceCn.IsEnabled         = $true
+        $UI.TxtServiceCn.IsEnabled      = $true
 
-        $UI.TxtServiceCaTitle.Text = "Neues Service-Zertifikat Konfigurieren"
-        $UI.BtnSaveNewService.Content = "💾 Speichern & Erzeugen"
+        $UI.TxtServiceCaTitle.Text      = "Neues Service-Zertifikat Konfigurieren"
+        $UI.BtnSaveNewService.Content   = "💾 Speichern & Erzeugen"
 
         Update-DashboardStatus
 
@@ -1837,10 +1912,10 @@ $UI.BtnSaveNewService.Add_Click({
 $UI.BtnCancelNewService.Add_Click({
     $global:IsServiceRenewMode      = $false
     $global:SelectedServiceForRenew = $null
-    $UI.TxtServiceCn.IsEnabled         = $true
+    $UI.TxtServiceCn.IsEnabled      = $true
 
-    $UI.TxtServiceCaTitle.Text = "Neues Service-Zertifikat Konfigurieren"
-    $UI.BtnSaveNewService.Content = "💾 Speichern & Erzeugen"
+    $UI.TxtServiceCaTitle.Text      = "Neues Service-Zertifikat Konfigurieren"
+    $UI.BtnSaveNewService.Content   = "💾 Speichern & Erzeugen"
 
     $UI.MainTabControl.SelectedItem = $UI.TabDashboard
     $UI.TxtStatus.Text = "Bereit."
@@ -1853,7 +1928,7 @@ $UI.GridServices.Add_ContextMenuOpening({
 
     # Globale Menüpunkte konfigurieren
     $UI.MenuGlobalNewService.IsEnabled = $UI.BtnNewService.IsEnabled
-    $UI.MenuGlobalRenewDue.IsEnabled = $UI.BtnRenewDue.IsEnabled
+    $UI.MenuGlobalRenewDue.IsEnabled   = $UI.BtnRenewDue.IsEnabled
 
     # Standardzustand setzen
     $UI.MenuMainAction.IsEnabled   = $false
@@ -1928,6 +2003,9 @@ $($selected.CommonName)
 Status:
 $($selected.Status)
 
+Ausstellende CA:
+$($selected.IssuerCommonName)
+
 Gültig bis:
 $($selected.ExpiryDate)
 
@@ -1987,7 +2065,7 @@ $UI.MenuExportCustom.Add_Click({
         try {
             # Unterzeichner-CA ermitteln (für Chains / PFX)
             $pkiState = Get-SystemPkiState
-            $useInter = ($null -ne $pkiState.IntermediateCA)
+            $useInter = ($null -ne $pkiState.IntermediateCA -and$pkiState.IntermediateCA.Status -ne "Defekt")
             if ($useInter) {
                 $interBase = if ($global:Config.defaults.intermediate_ca.base_filename) {
                     $global:Config.defaults.intermediate_ca.base_filename
@@ -2165,7 +2243,7 @@ $UI.MenuMainAction.Add_Click({
     LoadServiceCertToForm -ServiceItem $selected
 
     # Titel & Button für Renew-Modus anpassen
-    if ($UI.TxtServiceCaTitle) { $UI.TxtServiceCaTitle.Text = "Service-Zertifikat Bearbeiten & Erneuern" }
+    $UI.TxtServiceCaTitle.Text = "Service-Zertifikat Bearbeiten & Erneuern"
     $UI.BtnSaveNewService.Content = "🔄 Zertifikat Erneuern & Speichern"
 
     # Common Name darf bei bestehendem Eintrags-Renew nicht geändert werden (dient als Primary Key)
