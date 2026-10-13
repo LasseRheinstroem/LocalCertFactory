@@ -1,5 +1,6 @@
 # Umgebung
 notes/
+.gitignore
 
 # Configs
 *config*.yaml
