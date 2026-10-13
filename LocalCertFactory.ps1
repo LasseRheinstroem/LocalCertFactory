@@ -81,7 +81,7 @@ defaults:
       pem_cert: false
       pem_full: false
       chain: false
-      fullchain: false
+      fullchain: true
 
 service_certificates: []
 "@
@@ -2182,7 +2182,7 @@ $UI.MenuAdoptOrphan.Add_Click({
                 pem_cert  = $false
                 pem_full  = $false
                 chain     = $false
-                fullchain = $false
+                fullchain = $true
             }
         }
         sans_dns      = $sansDns
