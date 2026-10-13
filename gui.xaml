@@ -521,9 +521,51 @@
                     </Grid>
                 </Border>
             </TabItem>
+
+            <!-- TAB 6: HILFE & PKI-DOKUMENTATION -->
+            <TabItem x:Name="TabHelp">
+                <Border Background="White" CornerRadius="6" Padding="20">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Text="PKI-Handbuch &amp; Erklärungen" FontSize="18" FontWeight="Bold" Margin="0,0,0,15"/>
+
+                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,0,0,15">
+                            <StackPanel>
+                                <!-- Sektion 1 -->
+                                <TextBlock Text="1. Root-CA (Das Fundament)" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,0,0,5"/>
+                                <TextBlock TextWrapping="Wrap" Margin="0,0,0,10" Text="Die Root-CA ist der vertrauenswürdige Anker deiner gesamten PKI. Sie stellt sich selbst aus (Self-Signed) und sollte extrem sicher aufbewahrt werden (im Idealfall offline).&#x0a;• RootCA.crt: Enthält den öffentlichen Schlüssel. Muss auf allen Clients/Geräten im Heimnetz als vertrauenswürdige Stammzertifizierungsstelle importiert werden.&#x0a;• RootCA.key: Der geheime Schlüssel. Zum Signieren der Unter-CAs. Niemals auf öffentlich erreichbaren Servern speichern!&#x0a;• RootCA.pfx: Bundle aus Zertifikat und privatem Schlüssel für Backups oder den Import in Admin-Tools.&#x0a;• RootCA.srl: Kleine Textdatei, die intern von OpenSSL zur Verwaltung der Seriennummern genutzt wird."/>
+
+                                <!-- Sektion 2 -->
+                                <TextBlock Text="2. Intermediate-CA (Die Arbeitstier-CA)" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,10,0,5"/>
+                                <TextBlock TextWrapping="Wrap" Margin="0,0,0,10" Text="Aus Sicherheitsgründen signiert die Root-CA selten direkte Server-Zertifikate. Stattdessen wird eine Intermediate-CA eingesetzt. Wird diese kompromittiert, kann sie widerrufen werden, ohne die Root-CA neu zu erstellen.&#x0a;• IntermediateCA.crt: Das Zertifikat der Zwischen-CA, signiert von der Root-CA.&#x0a;• IntermediateCA.key: Der private Schlüssel, den du im Alltag nutzt, um neue Service-Zertifikate auszustellen.&#x0a;• IntermediateCA.pfx / .srl: Container bzw. Seriennummern-Verwaltung analog zur Root-CA."/>
+
+                                <!-- Sektion 3 -->
+                                <TextBlock Text="3. Service-Zertifikate (z.B. Proxmox, Webdienste)" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,10,0,5"/>
+                                <TextBlock TextWrapping="Wrap" Margin="0,0,0,10" Text="Diese Zertifikate werden von der Intermediate-CA (oder Root-CA) für konkrete Server in deinem Netzwerk ausgestellt.&#x0a;• .key: Der private Schlüssel des Servers (muss sicher auf dem Zielserver verbleiben).&#x0a;• .crt: Das reine End-Entity-Zertifikat.&#x0a;• .fullchain.crt: Die vollständige Kette (Server-Zertifikat + CA-Kette). Dies ist die wichtigste Datei für Webserver, Reverse Proxies oder Proxmox, um Browser-Warnungen zu verhindern.&#x0a;• .pfx: Kombinierter Container für Dienste, die z. B. unter Windows ein PFX-Format voraussetzen."/>
+
+                                <!-- Sektion 4 (NEU: Das Zusammenspiel im Alltag) -->
+                                <TextBlock Text="4. Zusammenspiel &amp; Funktionsweise im Alltag" FontSize="14" FontWeight="Bold" Foreground="#0078D4" Margin="0,10,0,5"/>
+                                <Border Background="#F3F2F1" BorderBrush="#0078D4" BorderThickness="1,0,0,0" Padding="12" Margin="0,0,0,10">
+                                    <TextBlock TextWrapping="Wrap" FontSize="11.5" Foreground="#323130" Text="1. Vertrauensbasis: Die RootCA.crt wird einmalig auf deinen Clients, PCs oder Smartphones als vertrauenswürdige Stammzertifizierungsstelle hinterlegt.&#x0a;&#x0a;2. Kette beim Aufruf: Wenn du eine HTTPS-Seite aufrufst (z. B. https://pve01.home.internal), liefert der Server dem Browser seine fullchain.crt (Server-Zertifikat + Intermediate-CA Zertifikat) sowie seinen privaten Schlüssel (.key) zum Nachweis der Identität.&#x0a;&#x0a;3. Browser-Prüfung: Der Browser prüft automatisch:&#x0a;   • Vertraue ich der Intermediate-CA? (Ja, weil sie von der Root-CA signiert wurde)&#x0a;   • Vertraue ich der Root-CA? (Ja, liegt lokal im Stammzertifikatsspeicher)&#x0a;   ➔ Ergebnis: Die Verbindung ist vertrauenswürdig (Schloss-Symbol ist grün).&#x0a;&#x0a;4. Ausstellung neuer Zertifikate: Neue Server-Zertifikate erzeugst du im Alltag über diese GUI bequem mit dem IntermediateCA.key. Die Root-CA bleibt dabei sicher und unangetastet geschützt."/>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+
+                        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button x:Name="BtnBackFromHelp" Content="Zurück zum Dashboard" Style="{StaticResource SecondaryButton}"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </TabItem>
+
         </TabControl>
 
-        <!-- STATUSZEILE MIT EINSTELLUNGEN-BUTTON -->
+        <!-- STATUSZEILE MIT EINSTELLUNGEN- & HILFE-BUTTON -->
         <Border Grid.Row="1" Background="#E1DFDD" Padding="8,2" Margin="0,8,0,0" CornerRadius="4">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -533,9 +575,14 @@
 
                 <TextBlock x:Name="TxtStatus" Grid.Column="0" Text="Bereit." FontSize="12" Foreground="#323130" VerticalAlignment="Center"/>
 
-                <Button x:Name="BtnOpenConfig" Grid.Column="1" Content="⚙ Einstellungen" 
-                        Style="{StaticResource SecondaryButton}" FontSize="11" Padding="6,2" Margin="0"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button x:Name="BtnOpenHelp" Content="❓ Hilfe" 
+                            Style="{StaticResource SecondaryButton}" FontSize="11" Padding="6,2" Margin="0,0,4,0"/>
+                    <Button x:Name="BtnOpenConfig" Grid.Column="1" Content="⚙ Einstellungen" 
+                            Style="{StaticResource SecondaryButton}" FontSize="11" Padding="6,2" Margin="0"/>
+                </StackPanel>
             </Grid>
         </Border>
+
     </Grid>
 </Window>

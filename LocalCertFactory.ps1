@@ -2305,7 +2305,19 @@ $UI.MenuGlobalRenewDue.Add_Click({
     $UI.BtnRenewDue.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Button]::ClickEvent)))
 })
 
-# --- 16. Configuration & View Navigation (Aktionen zur Steuerung der Anwendungs-Einstellungen sowie zum Import/Export der Konfiguration.) ---
+# --- 16. Help, Configuration & View Navigation (Aktionen zur Steuerung der Anwendungs-Einstellungen sowie zum Import/Export der Konfiguration.) ---
+# Öffnet die Hilfe-Ansicht / das PKI-Handbuch
+$UI.BtnOpenHelp.Add_Click({
+    $UI.MainTabControl.SelectedItem = $UI.TabHelp
+    $UI.TxtStatus.Text = "Hilfe & PKI-Handbuch geöffnet."
+})
+
+# Verlässt die Hilfe-Ansicht und kehrt zum Dashboard zurück
+$UI.BtnBackFromHelp.Add_Click({
+    $UI.MainTabControl.SelectedItem = $UI.TabDashboard
+    $UI.TxtStatus.Text = "Bereit."
+})
+
 # Öffnet die Einstellungs-Ansicht / den Konfigurations-Tab.
 $UI.BtnOpenConfig.Add_Click({
     Update-ConfigTabState
