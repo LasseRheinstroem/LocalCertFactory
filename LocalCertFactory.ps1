@@ -957,7 +957,7 @@ function Get-SystemPkiState {
                     $certInfo | Add-Member -NotePropertyName "EKU" -NotePropertyValue $detectedEku -Force
                     
                     if ($certInfo.Status -ne "Defekt") {
-                        $certInfo.Status = "Orphan"
+                        $certInfo.Status = "verweist"
                         $certInfo.StatusColor = "#8A8886"
                     }
                     $state.Services += $certInfo
@@ -1981,7 +1981,7 @@ $UI.GridServices.Add_ContextMenuOpening({
             $UI.MenuMainAction.IsEnabled   = $true
             $UI.MenuDeleteCert.IsEnabled   = $true
         }
-        "Orphan" {
+        "verweist" {
             $UI.MenuMainAction.Header      = "Nicht konfiguriert"
             $UI.MenuAdoptOrphan.IsEnabled  = $true
             $UI.MenuDeleteCert.IsEnabled   = $true
@@ -2150,7 +2150,7 @@ $UI.MenuExportCustom.Add_Click({
 # Verknüpft eine verwaiste Zertifikatsdatei/Ordner wieder mit der Anwendungslogik.
 $UI.MenuAdoptOrphan.Add_Click({
     $selected = $UI.GridServices.SelectedItem
-    if (-not $selected -or $selected.Status -ne "Orphan") { return }
+    if (-not $selected -or $selected.Status -ne "verweist") { return }
 
     $sansList = $selected.SANs -split ", "
     $sansDns  = @($sansList | Where-Object { $_ -notmatch '^\d+\.\d+\.\d+\.\d+$' -and $_ -ne "" })
