@@ -6,6 +6,7 @@ $asyncMethods = '[DllImport("user32.dll")] public static extern bool ShowWindow(
 $type = Add-Type -MemberDefinition $asyncMethods -Name 'WinApi' -Namespace 'GUI' -PassThru
 $type::ShowWindow($type::GetConsoleWindow(), 0) | Out-Null
 Add-Type -AssemblyName PresentationFramework
+Add-Type -AssemblyName System.Windows.Forms
 
 # --- 0. SCRIPT ENVIRONMENT ---
 $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -548,6 +549,98 @@ subjectAltName = $sanString
 }
 
 # --- 4. SERVICES FUNKTIONEN (High-Level Business-Logik zur Verwaltung, Validierung und Wiederherstellung von Zertifikaten.) ---
+function Invoke-ServiceExportPackage {
+    param(
+        [Parameter(Mandatory=$true)][string]$CommonName,
+        [Parameter(Mandatory=$true)][string]$TargetPath,
+        [Parameter(Mandatory=$true)][hashtable]$Formats
+    )
+
+    if ([string]::IsNullOrWhiteSpace($TargetPath)) {
+        throw "Kein Export-Zielpfad angegeben."
+    }
+
+    # Zielverzeichnis erstellen, falls nicht vorhanden
+    if (-not (Test-Path $TargetPath)) {
+        New-Item -ItemType Directory -Path $TargetPath -Force | Out-Null
+    }
+
+    $certDir = Get-AbsolutePath $global:Config.paths.certs_directory
+    $caDir   = Get-AbsolutePath $global:Config.paths.ca_directory
+    $safeFileName = $CommonName -replace '[^a-zA-Z0-9\.-]', '_'
+
+    $svcCrtPath = Join-Path $certDir "$safeFileName.crt"
+    $svcKeyPath = Join-Path $certDir "$safeFileName.key"
+    $svcPfxPath = Join-Path $certDir "$safeFileName.pfx"
+    $chainPath   = Join-Path $certDir "$safeFileName.chain.crt"
+
+    # Signierende CA ermitteln
+    $pkiState = Get-SystemPkiState
+    $useInter = ($null -ne $pkiState.IntermediateCA -and $pkiState.IntermediateCA.Status -ne "Defekt")
+    if ($useInter) {
+        $interBase = if ($global:Config.defaults.intermediate_ca.base_filename) { $global:Config.defaults.intermediate_ca.base_filename } else { "IntermediateCA" }
+        $signingCrtPath = Join-Path $caDir "$interBase.crt"
+    } else {
+        $rootBase = if ($global:Config.defaults.root_ca.base_filename) { $global:Config.defaults.root_ca.base_filename } else { "RootCA" }
+        $signingCrtPath = Join-Path $caDir "$rootBase.crt"
+    }
+
+    # 1. PFX Export (.pfx)
+    if ($Formats.pfx) {
+        if (-not (Test-Path $svcCrtPath) -or -not (Test-Path $svcKeyPath)) { throw "Zertifikat oder Private Key für PFX-Export fehlen." }
+        $destFile = Join-Path $TargetPath "$safeFileName.pfx"
+        
+        # Falls PFX noch nicht im CA-Ordner existiert, direkt erzeugen
+        if (-not (Test-Path $svcPfxPath)) {
+            $pfxArgs = @("pkcs12", "-export", "-out", $svcPfxPath, "-inkey", $svcKeyPath, "-in", $svcCrtPath, "-passin", "pass:", "-passout", "pass:")
+            if (Test-Path $signingCrtPath) { $pfxArgs += @("-certfile", $signingCrtPath) }
+            Invoke-OpenSSL -Arguments $pfxArgs | Out-Null
+        }
+        Copy-Item -Path $svcPfxPath -Destination $destFile -Force
+    }
+
+    # 2. Zertifikat (.crt)
+    if ($Formats.crt) {
+        if (-not (Test-Path $svcCrtPath)) { throw "Zertifikatsdatei ($svcCrtPath) fehlt." }
+        Copy-Item -Path $svcCrtPath -Destination (Join-Path $TargetPath "$safeFileName.crt") -Force
+    }
+
+    # 3. Private Key (.key)
+    if ($Formats.key) {
+        if (-not (Test-Path $svcKeyPath)) { throw "Private Key ($svcKeyPath) fehlt." }
+        Copy-Item -Path $svcKeyPath -Destination (Join-Path $TargetPath "$safeFileName.key") -Force
+    }
+
+    # 4. PEM Zertifikat (.pem)
+    if ($Formats.pem_cert) {
+        if (-not (Test-Path $svcCrtPath)) { throw "Zertifikatsdatei fehlt." }
+        Copy-Item -Path $svcCrtPath -Destination (Join-Path $TargetPath "$safeFileName.pem") -Force
+    }
+
+    # 5. PEM inkl. Key (.full.pem)
+    if ($Formats.pem_full) {
+        if (-not (Test-Path $svcCrtPath) -or -not (Test-Path $svcKeyPath)) { throw "Zertifikat oder Key fehlt." }
+        $crtText = Get-Content -Path $svcCrtPath -Raw
+        $keyText = Get-Content -Path $svcKeyPath -Raw
+        Set-Content -Path (Join-Path $TargetPath "$safeFileName.full.pem") -Value "$crtText`n$keyText" -Encoding UTF8
+    }
+
+    # 6. Chain (.chain.crt)
+    if ($Formats.chain) {
+        if (Test-Path $signingCrtPath) {
+            Copy-Item -Path $signingCrtPath -Destination (Join-Path $TargetPath $chainPath) -Force
+        }
+    }
+
+    # 7. Fullchain (.fullchain.crt)
+    if ($Formats.fullchain) {
+        if (-not (Test-Path $svcCrtPath)) { throw "Zertifikatsdatei fehlt." }
+        $crtText = Get-Content -Path $svcCrtPath -Raw
+        $caText  = if (Test-Path $signingCrtPath) { Get-Content -Path $signingCrtPath -Raw } else { "" }
+        Set-Content -Path (Join-Path $TargetPath "$safeFileName.fullchain.crt") -Value "$crtText`n$caText" -Encoding UTF8
+    }
+}
+
 function Get-CertDetailsFromFile {
     param(
         [string]$CrtPath
@@ -713,6 +806,29 @@ function Repair-ServiceCertificates {
 
         # Zertifikat neu erzeugen
         New-ServiceCertificate @splat
+
+        # Automatischer Auto-Export bei Renew / Bulk-Repair, wenn konfiguriert
+        if ($cfgMatch.export_profile -and $cfgMatch.export_profile.auto_export_on_renew -and -not [string]::IsNullOrWhiteSpace($cfgMatch.export_profile.target_path)) {
+            $formats = if ($cfgMatch.export_profile.formats) { 
+                $cfgMatch.export_profile.formats 
+            } else { 
+                # Fallback, falls keine Formate explizit im Profil stehen
+                @{
+                    pfx       = $false;
+                    crt       = $true;
+                    key       = $true;
+                    pem_cert  = $false;
+                    pem_full  = $false;
+                    chain     = $false;
+                    fullchain = $true
+                }
+            }
+            try {
+                Invoke-ServiceExportPackage -CommonName $cn -TargetPath $cfgMatch.export_profile.target_path -Formats $formats
+            } catch {
+                Write-Warning "Auto-Export für '$cn' während der Stapelverarbeitung fehlgeschlagen: $_"
+            }
+        }
     }
 }
 
@@ -1062,6 +1178,18 @@ function LoadConfigToForm {
     $UI.ChkExportChain.IsChecked     = [bool] $cfg.defaults.services.exports.chain
     $UI.ChkExportFullChain.IsChecked = [bool] $cfg.defaults.services.exports.fullchain
 
+    # Export Profile defaults leeren
+    $UI.TxtExportTargetPath.Text = ""
+    $UI.ChkProfileExpPfx.IsChecked = $false
+    $UI.ChkProfileExpCrt.IsChecked = $false
+    $UI.ChkProfileExpKey.IsChecked = $false
+    $UI.ChkProfileExpPemCert.IsChecked = $false
+    $UI.ChkProfileExpPemFull.IsChecked = $false
+    $UI.ChkProfileExpChain.IsChecked = $false
+    $UI.ChkProfileExpFullChain.IsChecked = $false
+    $UI.ChkAutoExportOnRenew.IsChecked = $false
+    $UI.ChkAutoExportOnRenew.IsEnabled = $false
+
     $UI.TxtConfigEditor.Text = ConvertTo-Yaml -Data $cfg
 }
 
@@ -1115,6 +1243,34 @@ function LoadServiceCertToForm {
     $UI.ChkExportPemFull.IsChecked   = [bool]$exp.pem_full
     $UI.ChkExportChain.IsChecked     = [bool]$exp.chain
     $UI.ChkExportFullChain.IsChecked = [bool]$exp.fullchain
+
+    # Export Profil laden falls vorhanden
+    if ($cfgMatch.export_profile) {
+        $ep = $cfgMatch.export_profile
+        $UI.TxtExportTargetPath.Text = if ($ep.target_path) { $ep.target_path } else { "" }
+        if ($ep.formats) {
+            $UI.ChkProfileExpPfx.IsChecked       = [bool]$ep.formats.pfx
+            $UI.ChkProfileExpCrt.IsChecked       = [bool]$ep.formats.crt
+            $UI.ChkProfileExpKey.IsChecked       = [bool]$ep.formats.key
+            $UI.ChkProfileExpPemCert.IsChecked   = [bool]$ep.formats.pem_cert
+            $UI.ChkProfileExpPemFull.IsChecked   = [bool]$ep.formats.pem_full
+            $UI.ChkProfileExpChain.IsChecked     = [bool]$ep.formats.chain
+            $UI.ChkProfileExpFullChain.IsChecked = [bool]$ep.formats.fullchain
+        }
+        $UI.ChkAutoExportOnRenew.IsChecked = [bool]$ep.auto_export_on_renew
+    } else {
+        $UI.TxtExportTargetPath.Text = ""
+        $UI.ChkProfileExpPfx.IsChecked = $false
+        $UI.ChkProfileExpCrt.IsChecked = $false
+        $UI.ChkProfileExpKey.IsChecked = $false
+        $UI.ChkProfileExpPemCert.IsChecked = $false
+        $UI.ChkProfileExpPemFull.IsChecked = $false
+        $UI.ChkProfileExpChain.IsChecked = $false
+        $UI.ChkProfileExpFullChain.IsChecked = $false
+        $UI.ChkAutoExportOnRenew.IsChecked = $false
+    }
+    
+    Update-ExportProfileValidationState
 }
 
 function Update-ConfigTabState {
@@ -1252,16 +1408,9 @@ function Show-PasswordDialog {
     $grid.Margin = New-Object System.Windows.Thickness(15)
     $dialog.Content = $grid
 
-    $row1 = New-Object System.Windows.Controls.RowDefinition
-    $row1.Height = [System.Windows.GridLength]::Auto
-    $row2 = New-Object System.Windows.Controls.RowDefinition
-    $row2.Height = [System.Windows.GridLength]::Auto
-    $row3 = New-Object System.Windows.Controls.RowDefinition
-    $row3.Height = [System.Windows.GridLength]::Auto
-
-    $grid.RowDefinitions.Add($row1)
-    $grid.RowDefinitions.Add($row2)
-    $grid.RowDefinitions.Add($row3)
+    $grid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition -Property @{Height=[System.Windows.GridLength]::Auto}))
+    $grid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition -Property @{Height=[System.Windows.GridLength]::Auto}))
+    $grid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition -Property @{Height=[System.Windows.GridLength]::Auto}))
 
     $lbl = New-Object System.Windows.Controls.TextBlock
     $lbl.Text = $Prompt
@@ -1416,72 +1565,16 @@ function Get-AbsolutePath {
     return [System.IO.Path]::GetFullPath((Join-Path $ScriptDir $Path))
 }
 
-function Get-CaPassword {
-    param([string]$PromptText = "Bitte Passwort eingeben:")
+function Update-ExportProfileValidationState {
+    $hasPath = -not [string]::IsNullOrWhiteSpace($UI.TxtExportTargetPath.Text)
+    $hasFormat = ($UI.ChkProfileExpPfx.IsChecked -or $UI.ChkProfileExpCrt.IsChecked -or $UI.ChkProfileExpKey.IsChecked -or $UI.ChkProfileExpPemCert.IsChecked -or $UI.ChkProfileExpPemFull.IsChecked -or $UI.ChkProfileExpChain.IsChecked -or $UI.ChkProfileExpFullChain.IsChecked)
 
-    if (-not [string]::IsNullOrEmpty($global:CaPasswordCache)) {
-        return $global:CaPasswordCache
+    if ($hasPath -and $hasFormat) {
+        $UI.ChkAutoExportOnRenew.IsEnabled = $true
+    } else {
+        $UI.ChkAutoExportOnRenew.IsChecked = $false
+        $UI.ChkAutoExportOnRenew.IsEnabled = $false
     }
-
-    $pwdWindow = New-Object System.Windows.Window
-    $pwdWindow.Title = "Passwort erforderlich"
-    $pwdWindow.Width = 380
-    $pwdWindow.Height = 180
-    $pwdWindow.WindowStartupLocation = "CenterOwner"
-    $pwdWindow.Owner = $window
-    $pwdWindow.ResizeMode = "NoResize"
-    $pwdWindow.Background = "#F4F5F7"
-
-    $stack = New-Object System.Windows.Controls.StackPanel
-    $stack.Margin = 15
-
-    $lbl = New-Object System.Windows.Controls.TextBlock
-    $lbl.Text = "$PromptText`n(Wird für diese Sitzung zwischengespeichert)"
-    $lbl.Margin = "0,0,0,10"
-    $stack.Children.Add($lbl)
-
-    $pwdBox = New-Object System.Windows.Controls.PasswordBox
-    $pwdBox.Margin = "0,0,0,15"
-    $pwdBox.Padding = "4"
-    $stack.Children.Add($pwdBox)
-
-    $btnStack = New-Object System.Windows.Controls.StackPanel
-    $btnStack.Orientation = "Horizontal"
-    $btnStack.HorizontalAlignment = "Right"
-
-    $btnOk = New-Object System.Windows.Controls.Button
-    $btnOk.Content = "OK"
-    $btnOk.Width = 75
-    $btnOk.IsDefault = $true
-    $btnOk.Add_Click({
-        $pwdWindow.DialogResult = $true
-        $pwdWindow.Close()
-    })
-
-    $btnCancel = New-Object System.Windows.Controls.Button
-    $btnCancel.Content = "Abbrechen"
-    $btnCancel.Width = 75
-    $btnCancel.Margin = "8,0,0,0"
-    $btnCancel.Add_Click({
-        $pwdWindow.DialogResult = $false
-        $pwdWindow.Close()
-    })
-
-    $btnStack.Children.Add($btnOk)
-    $btnStack.Children.Add($btnCancel)
-    $stack.Children.Add($btnStack)
-
-    $pwdWindow.Content = $stack
-    $pwdBox.Focus() | Out-Null
-
-    $result = $pwdWindow.ShowDialog()
-
-    if ($result -eq $true -and -not [string]::IsNullOrEmpty($pwdBox.Password)) {
-        $global:CaPasswordCache = $pwdBox.Password
-        return $global:CaPasswordCache
-    }
-
-    return $null
 }
 
 # --- 8. CONFIGURATION LOAD ---
@@ -1492,6 +1585,32 @@ $openSslResult = Get-OpenSSLPath -Config $global:Config
 
 # --- 10. XAML GUI LOAD & ELEMENT MAPPING ---
 $script:UI = Initialize-GUI -XamlPath $xamlPath
+
+# Event-Verknüpfungen für die Live-Validierung des Export-Profils im Erstellungs-Tab
+$UI.TxtExportTargetPath.Add_TextChanged({ Update-ExportProfileValidationState })
+$UI.ChkProfileExpPfx.Add_Checked({ Update-ExportProfileValidationState })
+$UI.ChkProfileExpPfx.Add_Unchecked({ Update-ExportProfileValidationState })
+$UI.ChkProfileExpCrt.Add_Checked({ Update-ExportProfileValidationState })
+$UI.ChkProfileExpCrt.Add_Unchecked({ Update-ExportProfileValidationState })
+$UI.ChkProfileExpKey.Add_Checked({ Update-ExportProfileValidationState })
+$UI.ChkProfileExpKey.Add_Unchecked({ Update-ExportProfileValidationState })
+$UI.ChkProfileExpPemCert.Add_Checked({ Update-ExportProfileValidationState })
+$UI.ChkProfileExpPemCert.Add_Unchecked({ Update-ExportProfileValidationState })
+$UI.ChkProfileExpPemFull.Add_Checked({ Update-ExportProfileValidationState })
+$UI.ChkProfileExpPemFull.Add_Unchecked({ Update-ExportProfileValidationState })
+$UI.ChkProfileExpChain.Add_Checked({ Update-ExportProfileValidationState })
+$UI.ChkProfileExpChain.Add_Unchecked({ Update-ExportProfileValidationState })
+$UI.ChkProfileExpFullChain.Add_Checked({ Update-ExportProfileValidationState })
+$UI.ChkProfileExpFullChain.Add_Unchecked({ Update-ExportProfileValidationState })
+
+# Ordner-Durchsuchen-Button für den Export-Pfad
+$UI.BtnBrowseExportPath.Add_Click({
+    $folderDlg = New-Object System.Windows.Forms.FolderBrowserDialog
+    $folderDlg.Description = "Bitte Zielverzeichnis für den Export auswählen"
+    if ($folderDlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $UI.TxtExportTargetPath.Text = $folderDlg.SelectedPath
+    }
+})
 
 # --- 11. INITIALISIERUNG ---
 LoadConfigToForm
@@ -1656,13 +1775,13 @@ $UI.BtnSaveIntermediate.Add_Click({
         $params = @{
             CommonName   = $UI.TxtInterCn.Text
             Organization = $UI.TxtInterOrg.Text
-            OU           = if ($TxtInterOu) { $TxtInterOu.Text } else { $global:Config.defaults.organization }
+            OU           = if ($UI.TxtInterOu) { $UI.TxtInterOu.Text } else { $global:Config.defaults.organization }
             Country      = $global:Config.defaults.country
             State        = $global:Config.defaults.state
             Locality     = $global:Config.defaults.locality
             ValidityDays = [int]$UI.TxtInterDays.Text
-            KeyAlgorithm = if ($UI.CmbInterAlgorithm -and $UI.CmbInterAlgorithm.Text) { $UI.CmbInterAlgorithm.Text } else { "RSA" }
-            KeyLength    = if ($UI.CmbInterKeyLength -and $UI.CmbInterKeyLength.Text) { $UI.CmbInterKeyLength.Text } else { "2048" }
+            KeyAlgorithm = if ($UI.CmbInterAlgorithm.Text) { $UI.CmbInterAlgorithm.Text } else { "RSA" }
+            KeyLength    = if ($UI.CmbInterKeyLength.Text) { $UI.CmbInterKeyLength.Text } else { "2048" }
             PathLen      = if ($UI.TxtInterPathLen.Text) { [int]$UI.TxtInterPathLen.Text } else { 0 }
             BaseFilename = $UI.TxtInterBaseFilename.Text.Trim()
         }
@@ -1752,6 +1871,7 @@ $UI.BtnCancelIntermediate.Add_Click({
 # --- 13. Service Certificate Management (Aktionen für die Erstellung, Speicherung und das Stornieren von Endbenutzer-/Service-Zertifikaten.) ---
 # Öffnet den Dialog/die Maske zur Erstellung eines neuen Service-Zertifikats.
 $UI.BtnNewService.Add_Click({
+    LoadConfigToForm
     $UI.MainTabControl.SelectedItem = $UI.TabNewService
     $UI.TxtStatus.Text = "Neues Service-Zertifikat..."
 })
@@ -1829,9 +1949,24 @@ $UI.BtnSaveNewService.Add_Click({
             fullchain = [bool]$UI.ChkExportFullChain.IsChecked
         }
 
+        # Export Profile Daten auslesen
+        $exportProfileMap = [ordered]@{
+            target_path          = $UI.TxtExportTargetPath.Text.Trim()
+            auto_export_on_renew = [bool]$UI.ChkAutoExportOnRenew.IsChecked
+            formats              = [ordered]@{
+                pfx       = [bool]$UI.ChkProfileExpPfx.IsChecked
+                crt       = [bool]$UI.ChkProfileExpCrt.IsChecked
+                key       = [bool]$UI.ChkProfileExpKey.IsChecked
+                pem_cert  = [bool]$UI.ChkProfileExpPemCert.IsChecked
+                pem_full  = [bool]$UI.ChkProfileExpPemFull.IsChecked
+                chain     = [bool]$UI.ChkProfileExpChain.IsChecked
+                fullchain = [bool]$UI.ChkProfileExpFullChain.IsChecked
+            }
+        }
+
         # 7. Parameter-Hashtable aufbauen
         $params = @{
-            DisplayName  = if ($UI.TxtServiceDisplayName) { $UI.TxtServiceDisplayName.Text } else { $UI.TxtServiceCn.Text }
+            DisplayName  = if ($UI.TxtServiceDisplayName.Text) { $UI.TxtServiceDisplayName.Text } else { $UI.TxtServiceCn.Text }
             CommonName   = $UI.TxtServiceCn.Text
             OU           = $UI.TxtServiceOu.Text
             SANsDNS      = $dnsList
@@ -1856,17 +1991,18 @@ $UI.BtnSaveNewService.Add_Click({
 
         # 9. Soll-Eintrag in config.yaml aktualisieren
         $newEntry = [ordered]@{
-            display_name  = $params.DisplayName
-            common_name   = $params.CommonName
-            ou            = $params.OU
-            eku           = $params.EKU
-            validity_days = $params.ValidityDays
-            key_algorithm = $params.KeyAlgorithm
-            key_length    = $params.KeyLength
-            key_usages    = $params.KeyUsages
-            exports       = $params.Exports
-            sans_dns      = $params.SANsDNS
-            sans_ip       = $params.SANsIP
+            display_name   = $params.DisplayName
+            common_name    = $params.CommonName
+            ou             = $params.OU
+            eku            = $params.EKU
+            validity_days  = $params.ValidityDays
+            key_algorithm  = $params.KeyAlgorithm
+            key_length     = $params.KeyLength
+            key_usages     = $params.KeyUsages
+            exports        = $params.Exports
+            sans_dns       = $params.SANsDNS
+            sans_ip        = $params.SANsIP
+            export_profile = $exportProfileMap
         }
 
         if ($null -eq $global:Config.service_certificates) {
@@ -1890,6 +2026,15 @@ $UI.BtnSaveNewService.Add_Click({
 
         # 10. Konfiguration speichern & UI zurücksetzen
         Save-ConfigToFile
+
+        # Automatischer Export beim manuellen Renew / Erstellen über das Formular, falls konfiguriert
+        if ($exportProfileMap.auto_export_on_renew -and -not [string]::IsNullOrWhiteSpace($exportProfileMap.target_path)) {
+            try {
+                Invoke-ServiceExportPackage -CommonName $params.CommonName -TargetPath $exportProfileMap.target_path -Formats $exportProfileMap.formats
+            } catch {
+                Write-Warning "Automatischer Export nach Speichern fehlgeschlagen: $_"
+            }
+        }
 
         $global:IsServiceRenewMode      = $false
         $global:SelectedServiceForRenew = $null
@@ -1934,6 +2079,7 @@ $UI.GridServices.Add_ContextMenuOpening({
     # Standardzustand setzen
     $UI.MenuMainAction.IsEnabled   = $false
     $UI.MenuShowDetails.IsEnabled  = $false
+    $UI.MenuManageExport.IsEnabled = $false
     $UI.MenuExportCustom.IsEnabled = $false
     $UI.MenuAdoptOrphan.IsEnabled  = $false
     $UI.MenuDeleteCert.IsEnabled   = $false
@@ -1946,6 +2092,7 @@ $UI.GridServices.Add_ContextMenuOpening({
             $UI.MenuMainAction.Header      = "Manuell erneuern (Force Renew)"
             $UI.MenuMainAction.IsEnabled   = $true
             $UI.MenuShowDetails.IsEnabled  = $true
+            $UI.MenuManageExport.IsEnabled = $true
             $UI.MenuExportCustom.IsEnabled = $true
             $UI.MenuDeleteCert.IsEnabled   = $true
         }
@@ -1953,6 +2100,7 @@ $UI.GridServices.Add_ContextMenuOpening({
             $UI.MenuMainAction.Header      = "Zertifikat erneuern"
             $UI.MenuMainAction.IsEnabled   = $true
             $UI.MenuShowDetails.IsEnabled  = $true
+            $UI.MenuManageExport.IsEnabled = $true
             $UI.MenuExportCustom.IsEnabled = $true
             $UI.MenuDeleteCert.IsEnabled   = $true
         }
@@ -1960,6 +2108,7 @@ $UI.GridServices.Add_ContextMenuOpening({
             $UI.MenuMainAction.Header      = "Zertifikat erneuern"
             $UI.MenuMainAction.IsEnabled   = $true
             $UI.MenuShowDetails.IsEnabled  = $true
+            $UI.MenuManageExport.IsEnabled = $true
             $UI.MenuExportCustom.IsEnabled = $true
             $UI.MenuDeleteCert.IsEnabled   = $true
         }
@@ -1967,6 +2116,7 @@ $UI.GridServices.Add_ContextMenuOpening({
             $UI.MenuMainAction.Header      = "Zertifikat erneuern (Re-issue)"
             $UI.MenuMainAction.IsEnabled   = $true
             $UI.MenuShowDetails.IsEnabled  = $true
+            $UI.MenuManageExport.IsEnabled = $true
             $UI.MenuExportCustom.IsEnabled = $true
             $UI.MenuDeleteCert.IsEnabled   = $true
         }
@@ -2032,6 +2182,185 @@ Thumbprint:
 $($selected.Thumbprint)
 "@
     [System.Windows.MessageBox]::Show($detailsText, "Zertifikats-Details", "OK", "Information")
+})
+
+# Dialog für EXPORT-PROFIL Verwaltung & sofortigen Export & Autorenew
+$UI.MenuManageExport.Add_Click({
+    $selected = $UI.GridServices.SelectedItem
+    if (-not $selected) { return }
+
+    # config-Eintrag suchen
+    $cfgMatch = $global:Config.service_certificates | Where-Object { $_.common_name -eq $selected.CommonName }
+    $existingPath = ""
+    $existingAutoRenew = $false
+    $existingFormats = @{
+        pfx       = $false;
+        crt       = $true;
+        key       = $true;
+        pem_cert  = $false;
+        pem_full  = $false;
+        chain     = $false;
+        fullchain = $true
+    }
+
+    if ($cfgMatch -and $cfgMatch.export_profile) {
+        if ($cfgMatch.export_profile.target_path) { $existingPath = $cfgMatch.export_profile.target_path }
+        if ($cfgMatch.export_profile.auto_export_on_renew -ne $null) { $existingAutoRenew = [bool]$cfgMatch.export_profile.auto_export_on_renew }
+        if ($cfgMatch.export_profile.formats) {
+            foreach ($key in $cfgMatch.export_profile.formats.Keys) {
+                $existingFormats[$key] = [bool]$cfgMatch.export_profile.formats[$key]
+            }
+        }
+    }
+
+    # Modalen WPF-Dialog mit dynamischer Größe erstellen
+    $dlg = New-Object System.Windows.Window
+    $dlg.Title = "Export-Profil & Paket-Export für '$($selected.CommonName)'"
+    $dlg.MinWidth = 500
+    $dlg.MinHeight = 300
+    $dlg.SizeToContent = [System.Windows.SizeToContent]::WidthAndHeight
+    $dlg.WindowStartupLocation = "CenterOwner"
+    $dlg.Owner = $UI.window
+    $dlg.ResizeMode = "NoResize"
+    $dlg.Background = "#F4F5F7"
+
+    # ScrollViewer für maximale Flexibilität auf kleinen Bildschirmen
+    $scrollViewer = New-Object System.Windows.Controls.ScrollViewer
+    $scrollViewer.VerticalScrollBarVisibility = "Auto"
+    $scrollViewer.HorizontalScrollBarVisibility = "Disabled"
+    $dlg.Content = $scrollViewer
+
+    $stack = New-Object System.Windows.Controls.StackPanel
+    $stack.Margin = New-Object System.Windows.Thickness(15)
+    $scrollViewer.Content = $stack
+
+    # Zielpfad Label & Eingabe
+    $stack.Children.Add((New-Object System.Windows.Controls.TextBlock -Property @{Text="Zielverzeichnis für den Export:"; FontWeight="SemiBold"; Margin="0,0,0,5"}))
+    
+    $pathGrid = New-Object System.Windows.Controls.Grid
+    $pathGrid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition -Property @{Width=New-Object System.Windows.GridLength(1, [System.Windows.GridUnitType]::Star)}))
+    $pathGrid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition -Property @{Width=New-Object System.Windows.GridLength(1, [System.Windows.GridUnitType]::Auto)}))
+    
+    $txtPath = New-Object System.Windows.Controls.TextBox
+    $txtPath.Text = $existingPath
+    $txtPath.Padding = New-Object System.Windows.Thickness(4)
+    $txtPath.VerticalAlignment = "Center"
+    [System.Windows.Controls.Grid]::SetColumn($txtPath, 0)
+    $pathGrid.Children.Add($txtPath) | Out-Null
+
+    $btnBrowse = New-Object System.Windows.Controls.Button
+    $btnBrowse.Content = "📁 Durchsuchen... "
+    $btnBrowse.Margin = New-Object System.Windows.Thickness(5,0,0,0)
+    $btnBrowse.Add_Click({
+        # Sicherstellen, dass Forms geladen ist
+        [void][System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")
+        $folderDlg = New-Object System.Windows.Forms.FolderBrowserDialog
+        $folderDlg.Description = "Bitte Zielverzeichnis für den Export auswählen"
+        
+        # Sauberer Aufruf ohne fehlerhafte Überladung
+        if ($folderDlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            if (-not [string]::IsNullOrWhiteSpace($folderDlg.SelectedPath)) {
+                $txtPath.Text = $folderDlg.SelectedPath
+            }
+        }
+    })
+    [System.Windows.Controls.Grid]::SetColumn($btnBrowse, 1)
+    $pathGrid.Children.Add($btnBrowse) | Out-Null
+    $stack.Children.Add($pathGrid)
+
+    # Formate Checkboxen
+    $stack.Children.Add((New-Object System.Windows.Controls.TextBlock -Property @{Text="Zu exportierende Formate:"; FontWeight="SemiBold"; Margin="0,15,0,5"}))
+    
+    $chkPfx = New-Object System.Windows.Controls.CheckBox -Property @{Content="PFX Container (.pfx)"; IsChecked=$existingFormats.pfx; Margin="0,2,0,2"}
+    $chkCrt = New-Object System.Windows.Controls.CheckBox -Property @{Content="Zertifikat (.crt)"; IsChecked=$existingFormats.crt; Margin="0,2,0,2"}
+    $chkKey = New-Object System.Windows.Controls.CheckBox -Property @{Content="Private Key (.key)"; IsChecked=$existingFormats.key; Margin="0,2,0,2"}
+    $chkPemCert = New-Object System.Windows.Controls.CheckBox -Property @{Content="PEM Zertifikat (.pem)"; IsChecked=$existingFormats.pem_cert; Margin="0,2,0,2"}
+    $chkPemFull = New-Object System.Windows.Controls.CheckBox -Property @{Content="PEM inkl. Key (.full.pem)"; IsChecked=$existingFormats.pem_full; Margin="0,2,0,2"}
+    $chkChain = New-Object System.Windows.Controls.CheckBox -Property @{Content="CA-Chain (.chain.crt)"; IsChecked=$existingFormats.chain; Margin="0,2,0,2"}
+    $chkFullChain = New-Object System.Windows.Controls.CheckBox -Property @{Content="Fullchain (.fullchain.crt)"; IsChecked=$existingFormats.fullchain; Margin="0,2,0,2"}
+
+    foreach ($chk in @($chkPfx, $chkCrt, $chkKey, $chkPemCert, $chkPemFull, $chkChain, $chkFullChain)) {
+        $stack.Children.Add($chk) | Out-Null
+    }
+
+    # Auto-Renew Checkbox
+    $chkAutoRenew = New-Object System.Windows.Controls.CheckBox
+    $chkAutoRenew.Content = "🔄 Bei automatischem Renew / Reparieren mit exportieren"
+    $chkAutoRenew.IsChecked = $existingAutoRenew
+    $chkAutoRenew.FontWeight = "SemiBold"
+    $chkAutoRenew.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#0078D4")
+    $chkAutoRenew.Margin = New-Object System.Windows.Thickness(0,15,0,15)
+    $stack.Children.Add($chkAutoRenew) | Out-Null
+
+    # Buttons unten
+    $btnStack = New-Object System.Windows.Controls.StackPanel
+    $btnStack.Orientation = "Horizontal"
+    $btnStack.HorizontalAlignment = "Right"
+
+    $btnExecute = New-Object System.Windows.Controls.Button
+    $btnExecute.Content = "💾 Speichern & Jetzt Exportieren "
+    $btnExecute.IsDefault = $true
+    $btnExecute.Margin = New-Object System.Windows.Thickness(0,0,10,0)
+    $btnExecute.Add_Click({
+        if ([string]::IsNullOrWhiteSpace($txtPath.Text)) {
+            [System.Windows.MessageBox]::Show("Bitte gib einen gültigen Zielpfad an.", "Fehler", "OK", "Warning")
+            return
+        }
+
+        # Daten in config.yaml persistieren
+        $newFormats = [ordered]@{
+            pfx       = [bool]$chkPfx.IsChecked
+            crt       = [bool]$chkCrt.IsChecked
+            key       = [bool]$chkKey.IsChecked
+            pem_cert  = [bool]$chkPemCert.IsChecked
+            pem_full  = [bool]$chkPemFull.IsChecked
+            chain     = [bool]$chkChain.IsChecked
+            fullchain = [bool]$chkFullChain.IsChecked
+        }
+
+        $newExportProfile = [ordered]@{
+            target_path          = $txtPath.Text.Trim()
+            auto_export_on_renew = [bool]$chkAutoRenew.IsChecked
+            formats              = $newFormats
+        }
+
+        if (-not $cfgMatch) {
+            # Falls das Zertifikat ein Waise ist oder noch kein vollständiger config-Eintrag existiert
+            [System.Windows.MessageBox]::Show("Für dieses Zertifikat existiert noch kein vollständiger Config-Eintrag. Bitte erst über 'In config.yaml übernehmen' hinzufügen.", "Fehler", "OK", "Error")
+            return
+        }
+
+        $cfgMatch['export_profile'] = $newExportProfile
+        Save-ConfigToFile
+
+        # Sofortigen Export ausführen
+        try {
+            Invoke-ServiceExportPackage -CommonName $selected.CommonName -TargetPath $txtPath.Text.Trim() -Formats $newFormats
+            [System.Windows.MessageBox]::Show("Export-Profil erfolgreich gespeichert und Dateien erfolgreich exportiert nach:`n$($txtPath.Text.Trim())", "Erfolg", "OK", "Information")
+            $dlg.DialogResult = $true
+            $dlg.Close()
+        } catch {
+            [System.Windows.MessageBox]::Show("Fehler beim Exportieren:`n$($_.Exception.Message)", "Exportfehler", "OK", "Error")
+        }
+    })
+
+    $btnCancelDlg = New-Object System.Windows.Controls.Button
+    $btnCancelDlg.Content = "Abbrechen"
+    # Korrekter Zugriff auf Window.Resources über $UI.window
+    if ($UI.window.Resources["SecondaryButton"]) {
+        $btnCancelDlg.Style = $UI.window.Resources["SecondaryButton"]
+    }
+    $btnCancelDlg.IsCancel = $true
+    $btnCancelDlg.Add_Click({
+    	$dlg.DialogResult = $false
+    	$dlg.Close()
+    })
+
+    $btnStack.Children.Add($btnExecute) | Out-Null
+    $btnStack.Children.Add($btnCancelDlg) | Out-Null
+    $stack.Children.Add($btnStack) | Out-Null
+
+    $dlg.ShowDialog() | Out-Null
 })
 
 # Öffnet den Dialog zum benutzerdefinierten Export (z. B. PFX, CER, PEM).
