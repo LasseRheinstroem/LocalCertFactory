@@ -14,7 +14,7 @@ $configPath = Join-Path $ScriptDir "config.yaml"
 $xamlPath   = Join-Path $ScriptDir "gui.xaml"
 
 if (-not (Test-Path $xamlPath)) {
-    Write-Error "gui.xaml nicht gefunden!"
+    [System.Windows.MessageBox]::Show("Die Datei 'gui.xaml' wurde nicht gefunden unter:`n$xamlPath", "Kritischer Fehler", "OK", "Error")
     exit
 }
 
@@ -1585,7 +1585,6 @@ $openSslResult = Get-OpenSSLPath -Config $global:Config
 
 # --- 10. XAML GUI LOAD & ELEMENT MAPPING ---
 $script:UI = Initialize-GUI -XamlPath $xamlPath
-
 # Event-Verknüpfungen für die Live-Validierung des Export-Profils im Erstellungs-Tab
 $UI.TxtExportTargetPath.Add_TextChanged({ Update-ExportProfileValidationState })
 $UI.ChkProfileExpPfx.Add_Checked({ Update-ExportProfileValidationState })
@@ -1602,15 +1601,6 @@ $UI.ChkProfileExpChain.Add_Checked({ Update-ExportProfileValidationState })
 $UI.ChkProfileExpChain.Add_Unchecked({ Update-ExportProfileValidationState })
 $UI.ChkProfileExpFullChain.Add_Checked({ Update-ExportProfileValidationState })
 $UI.ChkProfileExpFullChain.Add_Unchecked({ Update-ExportProfileValidationState })
-
-# Ordner-Durchsuchen-Button für den Export-Pfad
-$UI.BtnBrowseExportPath.Add_Click({
-    $folderDlg = New-Object System.Windows.Forms.FolderBrowserDialog
-    $folderDlg.Description = "Bitte Zielverzeichnis für den Export auswählen"
-    if ($folderDlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        $UI.TxtExportTargetPath.Text = $folderDlg.SelectedPath
-    }
-})
 
 # --- 11. INITIALISIERUNG ---
 LoadConfigToForm
@@ -2361,6 +2351,15 @@ $UI.MenuManageExport.Add_Click({
     $stack.Children.Add($btnStack) | Out-Null
 
     $dlg.ShowDialog() | Out-Null
+})
+
+# Ordner-Durchsuchen-Button für den Export-Pfad
+$UI.BtnBrowseExportPath.Add_Click({
+    $folderDlg = New-Object System.Windows.Forms.FolderBrowserDialog
+    $folderDlg.Description = "Bitte Zielverzeichnis für den Export auswählen"
+    if ($folderDlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $UI.TxtExportTargetPath.Text = $folderDlg.SelectedPath
+    }
 })
 
 # Öffnet den Dialog zum benutzerdefinierten Export (z. B. PFX, CER, PEM).
